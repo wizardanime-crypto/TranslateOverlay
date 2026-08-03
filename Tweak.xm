@@ -561,6 +561,10 @@ static void TOTranslateViewTree(UIView *view) {
 @property (nonatomic, strong) UILongPressGestureRecognizer *longPress;
 @property (nonatomic, strong) UITapGestureRecognizer *tripleTap;
 @property (nonatomic, assign) BOOL hiddenByDoubleTap;
+@property (nonatomic, assign) NSInteger activeSliderMode;
+@property (nonatomic, weak) UILabel *activeSliderValueLabel;
+@property (nonatomic, weak) UIView *activeColorPreviewView;
+@property (nonatomic, weak) UILabel *activeSizePreviewLabel;
 + (instancetype)shared;
 - (void)installIfPossible;
 - (void)showToast:(NSString *)message;
@@ -846,6 +850,16 @@ static void TOTranslateViewTree(UIView *view) {
 
 @implementation TOFloatingOverlayController
 
+typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
+    TOOverlaySliderModeNone = 0,
+    TOOverlaySliderModeTextHue,
+    TOOverlaySliderModeTextSaturation,
+    TOOverlaySliderModeBackgroundHue,
+    TOOverlaySliderModeBackgroundSaturation,
+    TOOverlaySliderModeBackgroundAlpha,
+    TOOverlaySliderModeTextSize
+};
+
 + (instancetype)shared {
     static TOFloatingOverlayController *c;
     static dispatch_once_t onceToken;
@@ -950,6 +964,113 @@ static void TOTranslateViewTree(UIView *view) {
     p.permittedArrowDirections = UIPopoverArrowDirectionAny;
 }
 
+- (void)presentSliderPopupWithTitle:(NSString *)title
+                               mode:(TOOverlaySliderMode)mode
+                          minValue:(CGFloat)minValue
+                          maxValue:(CGFloat)maxValue
+                      currentValue:(CGFloat)currentValue
+                      showsPreview:(BOOL)showsPreview
+                 showsSizePreview:(BOOL)showsSizePreview {
+    UIViewController *top = TOTopViewController();
+    if (!top) return;
+
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:title
+                                                                   message:@"\n\n\n\n\n\n"
+                                                            preferredStyle:UIAlertControllerStyleAlert];
+
+    UISlider *slider = [[UISlider alloc] initWithFrame:CGRectMake(18, 76, 234, 28)];
+    slider.minimumValue = minValue;
+    slider.maximumValue = maxValue;
+    slider.value = currentValue;
+    slider.tag = mode;
+    [slider addTarget:self action:@selector(handlePopupSliderChanged:) forControlEvents:UIControlEventValueChanged];
+
+    UILabel *valueLabel = [[UILabel alloc] initWithFrame:CGRectMake(18, 102, 234, 20)];
+    valueLabel.textAlignment = NSTextAlignmentCenter;
+    valueLabel.textColor = [UIColor secondaryLabelColor];
+    valueLabel.font = [UIFont monospacedDigitSystemFontOfSize:12 weight:UIFontWeightMedium];
+
+    UIView *preview = nil;
+    if (showsPreview) {
+        preview = [[UIView alloc] initWithFrame:CGRectMake(119, 128, 32, 32)];
+        preview.layer.cornerRadius = 16;
+        preview.layer.borderWidth = 1;
+        preview.layer.borderColor = [[UIColor grayColor] colorWithAlphaComponent:0.4].CGColor;
+        [alert.view addSubview:preview];
+    }
+
+    UILabel *sizePreview = nil;
+    if (showsSizePreview) {
+        sizePreview = [[UILabel alloc] initWithFrame:CGRectMake(18, 128, 234, 28)];
+        sizePreview.text = @"معاينة حجم النص";
+        sizePreview.textAlignment = NSTextAlignmentCenter;
+        sizePreview.textColor = [UIColor labelColor];
+        [alert.view addSubview:sizePreview];
+    }
+
+    [alert.view addSubview:slider];
+    [alert.view addSubview:valueLabel];
+
+    self.activeSliderMode = mode;
+    self.activeSliderValueLabel = valueLabel;
+    self.activeColorPreviewView = preview;
+    self.activeSizePreviewLabel = sizePreview;
+
+    [self handlePopupSliderChanged:slider];
+
+    [alert addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"حفظ" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [[TOTranslationManager shared] saveSettings];
+    }]];
+
+    [top presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)handlePopupSliderChanged:(UISlider *)slider {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    self.activeSliderMode = slider.tag;
+
+    switch (self.activeSliderMode) {
+        case TOOverlaySliderModeTextHue:
+            m.ocrManualHue = slider.value;
+            self.activeSliderValueLabel.text = [NSString stringWithFormat:@"Hue: %.0f%%", slider.value * 100.0];
+            self.activeColorPreviewView.backgroundColor = [m ocrManualUIColor];
+            break;
+        case TOOverlaySliderModeTextSaturation:
+            m.ocrManualSaturation = slider.value;
+            self.activeSliderValueLabel.text = [NSString stringWithFormat:@"Saturation: %.0f%%", slider.value * 100.0];
+            self.activeColorPreviewView.backgroundColor = [m ocrManualUIColor];
+            break;
+        case TOOverlaySliderModeBackgroundHue:
+            m.ocrBackgroundHue = slider.value;
+            self.activeSliderValueLabel.text = [NSString stringWithFormat:@"Hue: %.0f%%", slider.value * 100.0];
+            self.activeColorPreviewView.backgroundColor = [m ocrBackgroundUIColor];
+            break;
+        case TOOverlaySliderModeBackgroundSaturation:
+            m.ocrBackgroundSaturation = slider.value;
+            self.activeSliderValueLabel.text = [NSString stringWithFormat:@"Saturation: %.0f%%", slider.value * 100.0];
+            self.activeColorPreviewView.backgroundColor = [m ocrBackgroundUIColor];
+            break;
+        case TOOverlaySliderModeBackgroundAlpha:
+            m.ocrBackgroundAlpha = slider.value;
+            self.activeSliderValueLabel.text = [NSString stringWithFormat:@"Opacity: %.0f%%", slider.value * 100.0];
+            self.activeColorPreviewView.backgroundColor = [[m ocrBackgroundUIColor] colorWithAlphaComponent:m.ocrBackgroundAlpha];
+            break;
+        case TOOverlaySliderModeTextSize: {
+            m.ocrTextScale = slider.value;
+            self.activeSliderValueLabel.text = [NSString stringWithFormat:@"%.0f%%", slider.value * 100.0];
+            CGFloat size = MAX(11.0, MIN(32.0, 16.0 * slider.value));
+            self.activeSizePreviewLabel.font = [UIFont boldSystemFontOfSize:size];
+            self.activeSizePreviewLabel.text = [NSString stringWithFormat:@"معاينة %.0f%%", slider.value * 100.0];
+            break;
+        }
+        default:
+            break;
+    }
+
+    [m saveSettings];
+}
+
 - (void)showLanguagePicker:(BOOL)isSource {
     UIViewController *top = TOTopViewController();
     if (!top) return;
@@ -988,45 +1109,85 @@ static void TOTranslateViewTree(UIView *view) {
 }
 
 - (void)showOCRTextSizePicker {
-    UIViewController *top = TOTopViewController();
-    if (!top) return;
     TOTranslationManager *m = TOTranslationManager.shared;
-
-    UIAlertController *picker = [UIAlertController alertControllerWithTitle:@"حجم نص OCR"
-                                                                     message:[NSString stringWithFormat:@"الحجم الحالي: %.0f%%", m.ocrTextScale * 100.0]
-                                                              preferredStyle:UIAlertControllerStyleActionSheet];
-
-    NSArray<NSDictionary *> *sizes = @[
-        @{@"name": @"صغير 80%", @"value": @(0.8)},
-        @{@"name": @"عادي 100%", @"value": @(1.0)},
-        @{@"name": @"متوسط 120%", @"value": @(1.2)},
-        @{@"name": @"كبير 140%", @"value": @(1.4)},
-        @{@"name": @"كبير جدًا 170%", @"value": @(1.7)}
-    ];
-
-    for (NSDictionary *item in sizes) {
-        NSString *name = item[@"name"];
-        CGFloat value = [item[@"value"] doubleValue];
-        NSString *title = fabs(m.ocrTextScale - value) < 0.01 ? [NSString stringWithFormat:@"%@ ✓", name] : name;
-        [picker addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            m.ocrTextScale = value;
-            [m saveSettings];
-            [self showToast:[NSString stringWithFormat:@"حجم نص OCR: %@", name]];
-        }]];
-    }
-
-    [picker addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
-    [self configurePopover:picker];
-    [top presentViewController:picker animated:YES completion:nil];
+    [self presentSliderPopupWithTitle:@"حجم نص OCR"
+                                 mode:TOOverlaySliderModeTextSize
+                            minValue:0.7
+                            maxValue:2.0
+                        currentValue:m.ocrTextScale
+                        showsPreview:NO
+                   showsSizePreview:YES];
 }
 
 - (void)showOCRAppearanceSettings {
     UIViewController *top = TOTopViewController();
     if (!top) return;
-    TOOCRAppearanceViewController *vc = [TOOCRAppearanceViewController new];
-    vc.modalPresentationStyle = UIModalPresentationPageSheet;
-    vc.overlayController = self;
-    [top presentViewController:vc animated:YES completion:nil];
+    TOTranslationManager *m = TOTranslationManager.shared;
+
+    NSString *autoColorTitle = m.ocrAutoColorEnabled ? @"تعطيل اللون التلقائي للنص" : @"تفعيل اللون التلقائي للنص";
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"إعدادات مظهر OCR"
+                                                                   message:@"تخصيص لون النص والخلفية"
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:autoColorTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        m.ocrAutoColorEnabled = !m.ocrAutoColorEnabled;
+        [m saveSettings];
+        [self showToast:(m.ocrAutoColorEnabled ? @"تم تفعيل اللون التلقائي" : @"تم تعطيل اللون التلقائي")];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"لون النص: الدرجة اللونية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self presentSliderPopupWithTitle:@"لون النص - الدرجة اللونية"
+                                     mode:TOOverlaySliderModeTextHue
+                                minValue:0
+                                maxValue:1
+                            currentValue:m.ocrManualHue
+                            showsPreview:YES
+                       showsSizePreview:NO];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"لون النص: التشبع" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self presentSliderPopupWithTitle:@"لون النص - التشبع"
+                                     mode:TOOverlaySliderModeTextSaturation
+                                minValue:0
+                                maxValue:1
+                            currentValue:m.ocrManualSaturation
+                            showsPreview:YES
+                       showsSizePreview:NO];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"لون الخلفية: الدرجة اللونية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self presentSliderPopupWithTitle:@"لون الخلفية - الدرجة اللونية"
+                                     mode:TOOverlaySliderModeBackgroundHue
+                                minValue:0
+                                maxValue:1
+                            currentValue:m.ocrBackgroundHue
+                            showsPreview:YES
+                       showsSizePreview:NO];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"لون الخلفية: التشبع" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self presentSliderPopupWithTitle:@"لون الخلفية - التشبع"
+                                     mode:TOOverlaySliderModeBackgroundSaturation
+                                minValue:0
+                                maxValue:1
+                            currentValue:m.ocrBackgroundSaturation
+                            showsPreview:YES
+                       showsSizePreview:NO];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"تعتيم الخلفية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self presentSliderPopupWithTitle:@"تعتيم خلفية النص"
+                                     mode:TOOverlaySliderModeBackgroundAlpha
+                                minValue:0
+                                maxValue:1
+                            currentValue:m.ocrBackgroundAlpha
+                            showsPreview:YES
+                       showsSizePreview:NO];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
+    [self configurePopover:sheet];
+    [top presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)openDeveloperPage {
@@ -1070,10 +1231,46 @@ static void TOTranslateViewTree(UIView *view) {
 - (void)showSettings {
     UIViewController *top = TOTopViewController();
     if (!top) return;
-    TOTranslationSettingsViewController *vc = [TOTranslationSettingsViewController new];
-    vc.modalPresentationStyle = UIModalPresentationPageSheet;
-    vc.overlayController = self;
-    [top presentViewController:vc animated:YES completion:nil];
+    TOTranslationManager *m = TOTranslationManager.shared;
+    NSString *msg = [NSString stringWithFormat:@"المصدر: %@\nالهدف: %@", m.sourceLanguage, m.targetLanguage];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"إعدادات الترجمة"
+                                                                   message:msg
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"قسم الترجمة ▸" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        UIViewController *menuTop = TOTopViewController();
+        if (!menuTop) return;
+        UIAlertController *langSheet = [UIAlertController alertControllerWithTitle:@"قسم الترجمة"
+                                                                            message:nil
+                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
+        [langSheet addAction:[UIAlertAction actionWithTitle:@"اختيار لغة المصدر" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showLanguagePicker:YES]; }]];
+        [langSheet addAction:[UIAlertAction actionWithTitle:@"اختيار لغة الهدف" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showLanguagePicker:NO]; }]];
+        [langSheet addAction:[UIAlertAction actionWithTitle:@"رجوع" style:UIAlertActionStyleCancel handler:nil]];
+        [self configurePopover:langSheet];
+        [menuTop presentViewController:langSheet animated:YES completion:nil];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"قسم OCR ▸" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        UIViewController *menuTop = TOTopViewController();
+        if (!menuTop) return;
+        UIAlertController *ocrSheet = [UIAlertController alertControllerWithTitle:@"قسم OCR"
+                                                                           message:nil
+                                                                    preferredStyle:UIAlertControllerStyleActionSheet];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:@"ترجمة الصفحة OCR" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self startOCR]; }]];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:@"إعدادات مظهر OCR" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRAppearanceSettings]; }]];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:@"تغيير حجم نص OCR" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRTextSizePicker]; }]];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:@"رجوع" style:UIAlertActionStyleCancel handler:nil]];
+        [self configurePopover:ocrSheet];
+        [menuTop presentViewController:ocrSheet animated:YES completion:nil];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"صفحة المطور" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self openDeveloperPage];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
+    [self configurePopover:sheet];
+    [top presentViewController:sheet animated:YES completion:nil];
 }
 
 - (void)singleTap { [self translateCurrentPage]; }
