@@ -17,6 +17,9 @@ static NSString * const kTOTranslationCacheKey = @"to_translation_cache";
 static NSString * const kTOOCRTextScaleKey = @"to_ocr_text_scale";
 static NSString * const kTOOCRTextAutoColorEnabledKey = @"to_ocr_text_auto_color_enabled";
 static NSString * const kTOOCRBackgroundAutoColorEnabledKey = @"to_ocr_background_auto_color_enabled";
+static NSString * const kTOOCRCenterTextEnabledKey = @"to_ocr_center_text_enabled";
+static NSString * const kTOOCREditAfterTranslateEnabledKey = @"to_ocr_edit_after_translate_enabled";
+static NSString * const kTOMangaTranslationModeEnabledKey = @"to_manga_translation_mode_enabled";
 static NSString * const kTOOCRManualHueKey = @"to_ocr_manual_hue";
 static NSString * const kTOOCRManualSaturationKey = @"to_ocr_manual_saturation";
 static NSString * const kTOOCRManualBrightnessKey = @"to_ocr_manual_brightness";
@@ -131,6 +134,9 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 @property (nonatomic, assign) CGFloat ocrTextScale;
 @property (nonatomic, assign) BOOL ocrAutoColorEnabled;
 @property (nonatomic, assign) BOOL ocrBackgroundAutoColorEnabled;
+@property (nonatomic, assign) BOOL ocrCenterTextEnabled;
+@property (nonatomic, assign) BOOL ocrEditAfterTranslateEnabled;
+@property (nonatomic, assign) BOOL mangaTranslationModeEnabled;
 @property (nonatomic, assign) CGFloat ocrManualHue;
 @property (nonatomic, assign) CGFloat ocrManualSaturation;
 @property (nonatomic, assign) CGFloat ocrManualBrightness;
@@ -181,6 +187,15 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     NSNumber *autoBackgroundColor = [d objectForKey:kTOOCRBackgroundAutoColorEnabledKey];
     self.ocrBackgroundAutoColorEnabled = autoBackgroundColor ? [autoBackgroundColor boolValue] : NO;
 
+    NSNumber *centerText = [d objectForKey:kTOOCRCenterTextEnabledKey];
+    self.ocrCenterTextEnabled = centerText ? [centerText boolValue] : YES;
+
+    NSNumber *editAfterTranslate = [d objectForKey:kTOOCREditAfterTranslateEnabledKey];
+    self.ocrEditAfterTranslateEnabled = editAfterTranslate ? [editAfterTranslate boolValue] : YES;
+
+    NSNumber *mangaMode = [d objectForKey:kTOMangaTranslationModeEnabledKey];
+    self.mangaTranslationModeEnabled = mangaMode ? [mangaMode boolValue] : NO;
+
     CGFloat hue = [d doubleForKey:kTOOCRManualHueKey];
     CGFloat sat = [d doubleForKey:kTOOCRManualSaturationKey];
     CGFloat bri = [d doubleForKey:kTOOCRManualBrightnessKey];
@@ -208,6 +223,9 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     [d setDouble:self.ocrTextScale forKey:kTOOCRTextScaleKey];
     [d setBool:self.ocrAutoColorEnabled forKey:kTOOCRTextAutoColorEnabledKey];
     [d setBool:self.ocrBackgroundAutoColorEnabled forKey:kTOOCRBackgroundAutoColorEnabledKey];
+    [d setBool:self.ocrCenterTextEnabled forKey:kTOOCRCenterTextEnabledKey];
+    [d setBool:self.ocrEditAfterTranslateEnabled forKey:kTOOCREditAfterTranslateEnabledKey];
+    [d setBool:self.mangaTranslationModeEnabled forKey:kTOMangaTranslationModeEnabledKey];
     [d setDouble:MIN(MAX(self.ocrManualHue, 0.0), 1.0) forKey:kTOOCRManualHueKey];
     [d setDouble:MIN(MAX(self.ocrManualSaturation, 0.0), 1.0) forKey:kTOOCRManualSaturationKey];
     [d setDouble:MIN(MAX(self.ocrManualBrightness, 0.0), 1.0) forKey:kTOOCRManualBrightnessKey];
@@ -245,14 +263,28 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 }
 
 - (void)translateText:(NSString *)text completion:(void (^)(NSString *translated))completion {
-    if (!TOShouldTranslateText(text)) {
-        if (completion) completion(text ?: @"");
+    NSString *inputText = text ?: @"";
+    BOOL mangaMultiline = self.mangaTranslationModeEnabled && [inputText containsString:@"\n"];
+    NSString *preparedText = inputText;
+    if (mangaMultiline) {
+        NSString *normalized = [[inputText stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"] stringByReplacingOccurrencesOfString:@"\r" withString:@"\n"];
+        NSArray<NSString *> *paragraphs = [normalized componentsSeparatedByString:@"\n\n"];
+        NSMutableArray<NSString *> *cleanParagraphs = [NSMutableArray arrayWithCapacity:paragraphs.count];
+        for (NSString *paragraph in paragraphs) {
+            NSString *lineMerged = [[paragraph stringByReplacingOccurrencesOfString:@"\n" withString:@" "] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (lineMerged.length > 0) [cleanParagraphs addObject:lineMerged];
+        }
+        if (cleanParagraphs.count > 0) preparedText = [cleanParagraphs componentsJoinedByString:@"\n\n"];
+    }
+
+    if (!TOShouldTranslateText(preparedText)) {
+        if (completion) completion(inputText);
         return;
     }
 
     NSString *source = self.sourceLanguage ?: @"auto";
     NSString *target = self.targetLanguage ?: @"ar";
-    NSString *cacheKey = [NSString stringWithFormat:@"%@|%@|%@", source, target, text];
+    NSString *cacheKey = [NSString stringWithFormat:@"%@|%@|%@", source, target, preparedText];
     NSString *cached = [self.cache objectForKey:cacheKey] ?: self.persistentCache[cacheKey];
     if (cached.length > 0) {
         if (completion) completion(cached);
@@ -261,20 +293,20 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 
     NSString *sl = source;
     if ([sl isEqualToString:@"auto"]) {
-        NSString *detected = [self detectedLanguage:text];
+        NSString *detected = [self detectedLanguage:preparedText];
         if (detected.length > 0) sl = detected;
     }
 
-    NSString *q = [text stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet] ?: @"";
+    NSString *q = [preparedText stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet] ?: @"";
     NSString *u = [NSString stringWithFormat:@"https://translate.googleapis.com/translate_a/single?client=gtx&sl=%@&tl=%@&dt=t&q=%@", sl, target, q];
     NSURL *url = [NSURL URLWithString:u];
     if (!url) {
-        if (completion) completion(text);
+        if (completion) completion(inputText);
         return;
     }
 
     [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
-        NSString *result = text;
+        NSString *result = inputText;
         if (!error && data.length > 0) {
             id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
             if ([json isKindOfClass:[NSArray class]]) {
@@ -394,11 +426,12 @@ static void TOWarmupUILocalization(void) {
         phrases = @[
             @"إعدادات الترجمة", @"الترجمه من و إلى", @"إعدادات OCR", @"أخرى", @"صفحة المطور",
             @"الترجمه من", @"الترجمة إلى", @"اختيار لغة المصدر", @"اختيار لغة الهدف", @"إعدادات مظهر OCR", @"تغيير حجم نص OCR",
+            @"تنسيق النص: توسيط داخل الموضع", @"تحرير النص بعد ترجمة OCR", @"نمط ترجمة المانجا",
             @"إعدادات لون النص", @"إعدادات لون الخلفية", @"تفعيل اللون التلقائي للنص", @"تعطيل اللون التلقائي للنص",
             @"تفعيل اللون التلقائي لخلفية النص", @"تعطيل اللون التلقائي لخلفية النص",
             @"لون النص: الدرجة اللونية", @"لون النص: التشبع", @"لون الخلفية: الدرجة اللونية",
             @"لون الخلفية: التشبع", @"تعتيم الخلفية", @"تعتيم خلفية النص", @"رجوع", @"إلغاء",
-            @"تم", @"إغلاق", @"حفظ", @"حجم نص OCR", @"نتيجة OCR", @"المصدر", @"الهدف",
+            @"تم", @"إغلاق", @"حفظ", @"تحرير", @"تحرير نص OCR", @"حجم نص OCR", @"نتيجة OCR", @"المصدر", @"الهدف",
             @"جارٍ التقاط الصفحة وتحليلها...", @"تمت محاولة الترجمة"
         ];
     });
@@ -477,11 +510,174 @@ static void TOForceImmediateUILocalizationRefresh(void) {
     });
 }
 
+static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictionary *> *items) {
+    if (!image || items.count == 0) return image;
+
+    TOTranslationManager *m = [TOTranslationManager shared];
+    CGSize size = image.size;
+    UIGraphicsBeginImageContextWithOptions(size, NO, image.scale);
+    [image drawInRect:CGRectMake(0, 0, size.width, size.height)];
+
+    for (NSDictionary *item in items) {
+        NSString *text = item[@"translated"];
+        NSValue *rectValue = item[@"rect"];
+        if (text.length == 0 || !rectValue) continue;
+
+        CGRect rect = [rectValue CGRectValue];
+        if (CGRectIsEmpty(rect) || rect.size.width < 2 || rect.size.height < 2) continue;
+
+        CGFloat scale = m.ocrTextScale > 0.01 ? m.ocrTextScale : 1.0;
+        CGFloat fontSize = MAX(10.0, MIN(34.0, rect.size.height * 0.72 * scale));
+        UIColor *fg = nil;
+        if (m.ocrAutoColorEnabled) fg = item[@"detectedColor"];
+        if (!fg) fg = [m ocrManualUIColor];
+
+        CGRect bgRect = CGRectInset(rect, -2.0, -1.0);
+        UIColor *bgBase = nil;
+        if (m.ocrBackgroundAutoColorEnabled) bgBase = item[@"detectedBackgroundColor"];
+        if (!bgBase) bgBase = [m ocrBackgroundUIColor];
+        UIColor *bgColor = [bgBase colorWithAlphaComponent:MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0)];
+        [bgColor setFill];
+        [[UIBezierPath bezierPathWithRoundedRect:bgRect cornerRadius:3.0] fill];
+
+        CGRect textRect = CGRectInset(rect, 1.0, 0.0);
+        NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
+        paragraph.alignment = m.ocrCenterTextEnabled ? NSTextAlignmentCenter : NSTextAlignmentNatural;
+        paragraph.lineBreakMode = NSLineBreakByWordWrapping;
+
+        NSDictionary *attrs = nil;
+        CGSize measured = CGSizeZero;
+        for (NSInteger i = 0; i < 12; i++) {
+            UIFont *font = [UIFont boldSystemFontOfSize:fontSize];
+            attrs = @{
+                NSFontAttributeName: font,
+                NSForegroundColorAttributeName: fg,
+                NSParagraphStyleAttributeName: paragraph
+            };
+            measured = [text boundingRectWithSize:textRect.size
+                                         options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                      attributes:attrs
+                                         context:nil].size;
+            if (measured.height <= textRect.size.height + 0.5) break;
+            fontSize = MAX(8.0, fontSize - 1.0);
+        }
+
+        CGRect drawRect = textRect;
+        if (m.ocrCenterTextEnabled) {
+            CGFloat textHeight = MIN(ceil(measured.height), textRect.size.height);
+            drawRect.origin.y = textRect.origin.y + MAX(0.0, (textRect.size.height - textHeight) * 0.5);
+            drawRect.size.height = textHeight;
+        }
+
+        [text drawWithRect:drawRect
+                  options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+               attributes:attrs
+                  context:nil];
+    }
+
+    UIImage *rendered = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    return rendered ?: image;
+}
+
+@interface TOOCRTextEditorViewController : UIViewController
+@property (nonatomic, copy) NSString *initialText;
+@property (nonatomic, copy) void (^onSave)(NSString *editedText);
+@property (nonatomic, strong) UITextView *textView;
+@end
+
+@implementation TOOCRTextEditorViewController
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
+
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 44, self.view.bounds.size.width - 160, 28)];
+    title.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    title.text = TOUIString(@"تحرير نص OCR");
+    title.textColor = UIColor.whiteColor;
+    title.font = [UIFont boldSystemFontOfSize:20];
+    [self.view addSubview:title];
+
+    UIButton *cancel = [UIButton buttonWithType:UIButtonTypeSystem];
+    cancel.frame = CGRectMake(self.view.bounds.size.width - 168, 40, 74, 36);
+    cancel.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [cancel setTitle:TOUIString(@"إلغاء") forState:UIControlStateNormal];
+    [cancel setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    cancel.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.12];
+    cancel.layer.cornerRadius = 10;
+    [cancel addTarget:self action:@selector(cancelPressed) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:cancel];
+
+    UIButton *save = [UIButton buttonWithType:UIButtonTypeSystem];
+    save.frame = CGRectMake(self.view.bounds.size.width - 86, 40, 74, 36);
+    save.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [save setTitle:TOUIString(@"حفظ") forState:UIControlStateNormal];
+    [save setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    save.backgroundColor = [[UIColor colorWithRed:0.18 green:0.64 blue:0.95 alpha:1.0] colorWithAlphaComponent:0.85];
+    save.layer.cornerRadius = 10;
+    [save addTarget:self action:@selector(savePressed) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:save];
+
+    UITextView *tv = [[UITextView alloc] initWithFrame:CGRectMake(12, 92, self.view.bounds.size.width - 24, self.view.bounds.size.height - 104)];
+    tv.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+    tv.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.08];
+    tv.textColor = UIColor.whiteColor;
+    tv.font = [UIFont systemFontOfSize:15 weight:UIFontWeightRegular];
+    tv.layer.cornerRadius = 12;
+    tv.text = self.initialText ?: @"";
+    self.textView = tv;
+    [self.view addSubview:tv];
+}
+
+- (void)cancelPressed {
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+- (void)savePressed {
+    if (self.onSave) self.onSave(self.textView.text ?: @"");
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
+
+@end
+
 @interface TOOCRResultsViewController : UIViewController
 @property (nonatomic, strong) UIImage *screenshot;
+@property (nonatomic, strong) UIImage *baseImage;
+@property (nonatomic, strong) NSMutableArray<NSMutableDictionary *> *items;
+@property (nonatomic, strong) UIImageView *imageView;
 @end
 
 @implementation TOOCRResultsViewController
+
+- (NSString *)editorPayload {
+    if (self.items.count == 0) return @"";
+    NSMutableArray<NSString *> *blocks = [NSMutableArray arrayWithCapacity:self.items.count];
+    for (NSDictionary *item in self.items) {
+        [blocks addObject:(item[@"translated"] ?: @"")];
+    }
+    return [blocks componentsJoinedByString:@"\n\n#####\n\n"];
+}
+
+- (void)applyEditedPayload:(NSString *)payload {
+    NSArray<NSString *> *parts = [payload componentsSeparatedByString:@"\n\n#####\n\n"];
+    NSInteger count = MIN((NSInteger)parts.count, (NSInteger)self.items.count);
+    for (NSInteger i = 0; i < count; i++) {
+        NSString *edited = [parts[i] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (edited.length > 0) self.items[i][@"translated"] = edited;
+    }
+}
+
+- (void)refreshRenderedImage {
+    UIImage *base = self.baseImage ?: self.screenshot;
+    if (!base) return;
+    if (self.items.count == 0) {
+        self.imageView.image = self.screenshot;
+        return;
+    }
+    self.imageView.image = TORenderTranslatedTextOnImage(base, self.items);
+}
+
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor colorWithWhite:0.06 alpha:1.0];
@@ -503,6 +699,18 @@ static void TOForceImmediateUILocalizationRefresh(void) {
     [close addTarget:self action:@selector(closePressed) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:close];
 
+    if ([TOTranslationManager shared].ocrEditAfterTranslateEnabled) {
+        UIButton *edit = [UIButton buttonWithType:UIButtonTypeSystem];
+        edit.frame = CGRectMake(self.view.bounds.size.width - 170, 40, 72, 36);
+        edit.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+        [edit setTitle:TOUIString(@"تحرير") forState:UIControlStateNormal];
+        [edit setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+        edit.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.12];
+        edit.layer.cornerRadius = 10;
+        [edit addTarget:self action:@selector(editPressed) forControlEvents:UIControlEventTouchUpInside];
+        [self.view addSubview:edit];
+    }
+
     UIImageView *imageView = [[UIImageView alloc] initWithFrame:CGRectMake(12, 88, self.view.bounds.size.width - 24, self.view.bounds.size.height - 104)];
     imageView.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
     imageView.image = self.screenshot;
@@ -510,7 +718,10 @@ static void TOForceImmediateUILocalizationRefresh(void) {
     imageView.layer.cornerRadius = 12;
     imageView.clipsToBounds = YES;
     imageView.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.04];
+    self.imageView = imageView;
     [self.view addSubview:imageView];
+
+    [self refreshRenderedImage];
 }
 
 - (void)viewDidAppear:(BOOL)animated {
@@ -519,6 +730,21 @@ static void TOForceImmediateUILocalizationRefresh(void) {
 }
 
 - (void)closePressed { [self dismissViewControllerAnimated:YES completion:nil]; }
+
+- (void)editPressed {
+    TOOCRTextEditorViewController *editor = [TOOCRTextEditorViewController new];
+    editor.modalPresentationStyle = UIModalPresentationFullScreen;
+    editor.initialText = [self editorPayload];
+    __weak typeof(self) weakSelf = self;
+    editor.onSave = ^(NSString *editedText) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        [self applyEditedPayload:editedText ?: @""];
+        [self refreshRenderedImage];
+    };
+    [self presentViewController:editor animated:YES completion:nil];
+}
+
 @end
 
 @interface TOPageOCRController : NSObject
@@ -908,53 +1134,59 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
     return langs;
 }
 
-- (UIImage *)renderTranslatedTextOnImage:(UIImage *)image items:(NSArray<NSDictionary *> *)items {
-    if (!image || items.count == 0) return image;
+- (NSArray<NSDictionary *> *)mergedMangaBlocksFromItems:(NSArray<NSDictionary *> *)items {
+    if (items.count <= 1) return items;
 
-    TOTranslationManager *m = [TOTranslationManager shared];
-    CGSize size = image.size;
-    UIGraphicsBeginImageContextWithOptions(size, NO, image.scale);
-    [image drawInRect:CGRectMake(0, 0, size.width, size.height)];
+    NSMutableArray<NSDictionary *> *sorted = [items mutableCopy];
+    [sorted sortUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        CGRect ra = [a[@"rect"] CGRectValue];
+        CGRect rb = [b[@"rect"] CGRectValue];
+        CGFloat dy = CGRectGetMinY(ra) - CGRectGetMinY(rb);
+        if (fabs(dy) > 6.0) return (dy < 0) ? NSOrderedAscending : NSOrderedDescending;
+        CGFloat dx = CGRectGetMinX(ra) - CGRectGetMinX(rb);
+        return (dx < 0) ? NSOrderedAscending : NSOrderedDescending;
+    }];
 
-    for (NSDictionary *item in items) {
-        NSString *text = item[@"translated"];
-        NSValue *rectValue = item[@"rect"];
-        if (text.length == 0 || !rectValue) continue;
+    NSMutableArray<NSMutableDictionary *> *blocks = [NSMutableArray array];
+    for (NSDictionary *raw in sorted) {
+        NSMutableDictionary *current = [raw mutableCopy];
+        if (blocks.count == 0) {
+            [blocks addObject:current];
+            continue;
+        }
 
-        CGRect rect = [rectValue CGRectValue];
-        if (CGRectIsEmpty(rect) || rect.size.width < 2 || rect.size.height < 2) continue;
+        NSMutableDictionary *last = blocks.lastObject;
+        CGRect lr = [last[@"rect"] CGRectValue];
+        CGRect cr = [current[@"rect"] CGRectValue];
 
-        CGFloat scale = m.ocrTextScale > 0.01 ? m.ocrTextScale : 1.0;
-        CGFloat fontSize = MAX(10.0, MIN(34.0, rect.size.height * 0.72 * scale));
-        UIFont *font = [UIFont boldSystemFontOfSize:fontSize];
+        CGFloat verticalGap = CGRectGetMinY(cr) - CGRectGetMaxY(lr);
+        CGFloat overlap = MAX(0.0, MIN(CGRectGetMaxX(lr), CGRectGetMaxX(cr)) - MAX(CGRectGetMinX(lr), CGRectGetMinX(cr)));
+        CGFloat minWidth = MAX(1.0, MIN(CGRectGetWidth(lr), CGRectGetWidth(cr)));
+        CGFloat overlapRatio = overlap / minWidth;
+        CGFloat centerDistance = fabs(CGRectGetMidX(lr) - CGRectGetMidX(cr));
 
-        UIColor *fg = nil;
-        if (m.ocrAutoColorEnabled) fg = item[@"detectedColor"];
-        if (!fg) fg = [m ocrManualUIColor];
+        BOOL nearVertically = verticalGap <= MAX(12.0, CGRectGetHeight(lr) * 0.75);
+        BOOL aligned = (overlapRatio >= 0.20) || (centerDistance <= MAX(24.0, CGRectGetWidth(lr) * 0.45));
 
-        NSDictionary *attrs = @{
-            NSFontAttributeName: font,
-            NSForegroundColorAttributeName: fg
-        };
-
-        CGRect bgRect = CGRectInset(rect, -2.0, -1.0);
-        UIColor *bgBase = nil;
-        if (m.ocrBackgroundAutoColorEnabled) bgBase = item[@"detectedBackgroundColor"];
-        if (!bgBase) bgBase = [m ocrBackgroundUIColor];
-        UIColor *bgColor = [bgBase colorWithAlphaComponent:MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0)];
-        [bgColor setFill];
-        UIBezierPath *bg = [UIBezierPath bezierPathWithRoundedRect:bgRect cornerRadius:3.0];
-        [bg fill];
-
-        [text drawWithRect:CGRectInset(rect, 1.0, 0.0)
-                  options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
-               attributes:attrs
-                  context:nil];
+        if (nearVertically && aligned) {
+            NSString *prev = last[@"source"] ?: @"";
+            NSString *next = current[@"source"] ?: @"";
+            if (next.length > 0) {
+                last[@"source"] = (prev.length > 0) ? [NSString stringWithFormat:@"%@\n%@", prev, next] : next;
+            }
+            last[@"rect"] = [NSValue valueWithCGRect:CGRectUnion(lr, cr)];
+            if (!last[@"detectedColor"] && current[@"detectedColor"]) last[@"detectedColor"] = current[@"detectedColor"];
+            if (!last[@"detectedBackgroundColor"] && current[@"detectedBackgroundColor"]) last[@"detectedBackgroundColor"] = current[@"detectedBackgroundColor"];
+        } else {
+            [blocks addObject:current];
+        }
     }
 
-    UIImage *rendered = UIGraphicsGetImageFromCurrentImageContext();
-    UIGraphicsEndImageContext();
-    return rendered ?: image;
+    return blocks;
+}
+
+- (UIImage *)renderTranslatedTextOnImage:(UIImage *)image items:(NSArray<NSDictionary *> *)items {
+    return TORenderTranslatedTextOnImage(image, items);
 }
 
 - (void)presentOCRForWindow:(UIWindow *)window completion:(void (^)(void))completion {
@@ -984,6 +1216,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                 }
             }
 
+            TOTranslationManager *settings = [TOTranslationManager shared];
+            if (settings.mangaTranslationModeEnabled && items.count > 1) {
+                items = [[self mergedMangaBlocksFromItems:items] mutableCopy];
+            }
+
             if (items.count == 0) {
                 dispatch_async(dispatch_get_main_queue(), ^{
                     UIAlertController *a = [UIAlertController alertControllerWithTitle:@"OCR" message:@"لم يتم العثور على نص في لقطة الشاشة." preferredStyle:UIAlertControllerStyleAlert];
@@ -1011,6 +1248,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                 TOOCRResultsViewController *vc = [TOOCRResultsViewController new];
                 vc.modalPresentationStyle = UIModalPresentationFullScreen;
                 vc.screenshot = rendered;
+                vc.baseImage = image;
+                vc.items = translated;
                 [TOTopViewController() presentViewController:vc animated:YES completion:completion];
             });
         }];
@@ -1907,9 +2146,32 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", TOUIString(@"إعدادات الترجمة")] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         UIViewController *menuTop = TOTopViewController();
         if (!menuTop) return;
+        TOTranslationManager *tm = TOTranslationManager.shared;
         UIAlertController *ocrSheet = [UIAlertController alertControllerWithTitle:TOUIString(@"إعدادات الترجمة")
                                                                            message:nil
                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
+
+        NSString *centerTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"تنسيق النص: توسيط داخل الموضع"), (tm.ocrCenterTextEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:centerTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            tm.ocrCenterTextEnabled = !tm.ocrCenterTextEnabled;
+            [tm saveSettings];
+            [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"تنسيق النص: توسيط داخل الموضع"), (tm.ocrCenterTextEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))]];
+        }]];
+
+        NSString *editTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"تحرير النص بعد ترجمة OCR"), (tm.ocrEditAfterTranslateEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:editTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            tm.ocrEditAfterTranslateEnabled = !tm.ocrEditAfterTranslateEnabled;
+            [tm saveSettings];
+            [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"تحرير النص بعد ترجمة OCR"), (tm.ocrEditAfterTranslateEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))]];
+        }]];
+
+        NSString *mangaTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"نمط ترجمة المانجا"), (tm.mangaTranslationModeEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:mangaTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            tm.mangaTranslationModeEnabled = !tm.mangaTranslationModeEnabled;
+            [tm saveSettings];
+            [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"نمط ترجمة المانجا"), (tm.mangaTranslationModeEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))]];
+        }]];
+
         [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"ترجمة الصفحة OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self startOCR]; }]];
         [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"إعدادات مظهر OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRAppearanceSettings]; }]];
         [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"تغيير حجم نص OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRTextSizePicker]; }]];
