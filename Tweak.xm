@@ -20,6 +20,7 @@ static NSString * const kTOOCRBackgroundAutoColorEnabledKey = @"to_ocr_backgroun
 static NSString * const kTOOCRCenterTextEnabledKey = @"to_ocr_center_text_enabled";
 static NSString * const kTOOCREditAfterTranslateEnabledKey = @"to_ocr_edit_after_translate_enabled";
 static NSString * const kTOMangaTranslationModeEnabledKey = @"to_manga_translation_mode_enabled";
+static NSString * const kTOTranslationTapModeKey = @"to_translation_tap_mode";
 static NSString * const kTOOCRManualHueKey = @"to_ocr_manual_hue";
 static NSString * const kTOOCRManualSaturationKey = @"to_ocr_manual_saturation";
 static NSString * const kTOOCRManualBrightnessKey = @"to_ocr_manual_brightness";
@@ -33,6 +34,12 @@ static BOOL TOShouldTranslateText(NSString *text) {
     NSString *trim = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
     return trim.length > 0 && trim.length <= 2500;
 }
+
+typedef NS_ENUM(NSInteger, TOTranslationTapMode) {
+    TOTranslationTapModeNormal = 0,
+    TOTranslationTapModeManga = 1,
+    TOTranslationTapModeLive = 2
+};
 
 static NSString *TONormalizedLocaleIdentifier(NSString *languageCode) {
     if (languageCode.length == 0) return @"en";
@@ -137,6 +144,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 @property (nonatomic, assign) BOOL ocrCenterTextEnabled;
 @property (nonatomic, assign) BOOL ocrEditAfterTranslateEnabled;
 @property (nonatomic, assign) BOOL mangaTranslationModeEnabled;
+@property (nonatomic, assign) NSInteger translationTapMode;
 @property (nonatomic, assign) CGFloat ocrManualHue;
 @property (nonatomic, assign) CGFloat ocrManualSaturation;
 @property (nonatomic, assign) CGFloat ocrManualBrightness;
@@ -196,6 +204,10 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     NSNumber *mangaMode = [d objectForKey:kTOMangaTranslationModeEnabledKey];
     self.mangaTranslationModeEnabled = mangaMode ? [mangaMode boolValue] : NO;
 
+    NSInteger tapMode = [d integerForKey:kTOTranslationTapModeKey];
+    if (tapMode < TOTranslationTapModeNormal || tapMode > TOTranslationTapModeLive) tapMode = TOTranslationTapModeNormal;
+    self.translationTapMode = tapMode;
+
     CGFloat hue = [d doubleForKey:kTOOCRManualHueKey];
     CGFloat sat = [d doubleForKey:kTOOCRManualSaturationKey];
     CGFloat bri = [d doubleForKey:kTOOCRManualBrightnessKey];
@@ -226,6 +238,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     [d setBool:self.ocrCenterTextEnabled forKey:kTOOCRCenterTextEnabledKey];
     [d setBool:self.ocrEditAfterTranslateEnabled forKey:kTOOCREditAfterTranslateEnabledKey];
     [d setBool:self.mangaTranslationModeEnabled forKey:kTOMangaTranslationModeEnabledKey];
+    [d setInteger:self.translationTapMode forKey:kTOTranslationTapModeKey];
     [d setDouble:MIN(MAX(self.ocrManualHue, 0.0), 1.0) forKey:kTOOCRManualHueKey];
     [d setDouble:MIN(MAX(self.ocrManualSaturation, 0.0), 1.0) forKey:kTOOCRManualSaturationKey];
     [d setDouble:MIN(MAX(self.ocrManualBrightness, 0.0), 1.0) forKey:kTOOCRManualBrightnessKey];
@@ -426,6 +439,8 @@ static void TOWarmupUILocalization(void) {
         phrases = @[
             @"إعدادات الترجمة", @"الترجمه من و إلى", @"إعدادات OCR", @"أخرى", @"صفحة المطور",
             @"الترجمه من", @"الترجمة إلى", @"اختيار لغة المصدر", @"اختيار لغة الهدف", @"إعدادات مظهر OCR", @"تغيير حجم نص OCR",
+            @"نمط الترجمه", @"زر الترجمة العاديه", @"زر نمط ترجمة المانجا", @"زر نمط الترجمه المباشره",
+            @"تم تفعيل نمط الترجمه المباشره", @"تم إيقاف نمط الترجمه المباشره", @"تم تفعيل نمط ترجمة المانجا", @"تم تفعيل نمط الترجمة العاديه",
             @"تنسيق النص: توسيط داخل الموضع", @"تحرير النص بعد ترجمة OCR", @"نمط ترجمة المانجا",
             @"إعدادات لون النص", @"إعدادات لون الخلفية", @"تفعيل اللون التلقائي للنص", @"تعطيل اللون التلقائي للنص",
             @"تفعيل اللون التلقائي لخلفية النص", @"تعطيل اللون التلقائي لخلفية النص",
@@ -440,6 +455,18 @@ static void TOWarmupUILocalization(void) {
         NSString *key = [NSString stringWithFormat:@"ar|%@|%@", target, text];
         if ([m.cache objectForKey:key] || m.persistentCache[key]) continue;
         (void)TOUIString(text);
+    }
+}
+
+static NSString *TOTranslationModeLabel(TOTranslationTapMode mode) {
+    switch (mode) {
+        case TOTranslationTapModeManga:
+            return TOUIString(@"زر نمط ترجمة المانجا");
+        case TOTranslationTapModeLive:
+            return TOUIString(@"زر نمط الترجمه المباشره");
+        case TOTranslationTapModeNormal:
+        default:
+            return TOUIString(@"زر الترجمة العاديه");
     }
 }
 
@@ -1338,10 +1365,15 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, weak) UILabel *activeSliderValueLabel;
 @property (nonatomic, weak) UIView *activeColorPreviewView;
 @property (nonatomic, weak) UILabel *activeSizePreviewLabel;
+@property (nonatomic, assign) BOOL liveTranslateEnabled;
+@property (nonatomic, assign) NSUInteger liveTranslateGeneration;
 + (instancetype)shared;
 - (void)installIfPossible;
 - (void)showToast:(NSString *)message;
 - (void)startOCR;
+- (void)startOCRForMangaMode:(BOOL)useMangaMode;
+- (void)showTranslationModeSettings;
+- (void)handleScrollActivity;
 - (void)showOCRAppearanceSettings;
 - (void)showOCRTextSizePicker;
 - (void)showLanguagePicker:(BOOL)isSource;
@@ -2128,12 +2160,16 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     }
 }
 
-- (void)startOCR {
+- (void)startOCRForMangaMode:(BOOL)useMangaMode {
     UIWindow *w = self.attachedWindow ?: TOActiveWindow();
     if (!w) {
         [self showToast:@"لا توجد نافذة نشطة"];
         return;
     }
+
+    TOTranslationManager *m = [TOTranslationManager shared];
+    m.mangaTranslationModeEnabled = useMangaMode;
+    [m saveSettings];
 
     self.floatingButton.hidden = YES;
     [self showToast:@"جارٍ التقاط الصفحة وتحليلها..."];
@@ -2144,12 +2180,65 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     });
 }
 
+- (void)startOCR {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    [self startOCRForMangaMode:(m.translationTapMode == TOTranslationTapModeManga)];
+}
+
 - (void)translateCurrentPage {
     UIWindow *w = self.attachedWindow ?: TOActiveWindow();
     if (!w) return;
     TOTranslateViewTree(w);
     if (w.rootViewController) TOTranslateViewTree(w.rootViewController.view);
     [self showToast:@"تمت محاولة الترجمة"];
+}
+
+- (void)handleScrollActivity {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
+
+    NSUInteger token = ++self.liveTranslateGeneration;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.28 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (token != self.liveTranslateGeneration) return;
+        [self translateCurrentPage];
+    });
+}
+
+- (void)showTranslationModeSettings {
+    UIViewController *top = TOTopViewController();
+    if (!top) return;
+
+    TOTranslationManager *m = [TOTranslationManager shared];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TOUIString(@"نمط الترجمه")
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    NSArray<NSNumber *> *modes = @[@(TOTranslationTapModeNormal), @(TOTranslationTapModeManga), @(TOTranslationTapModeLive)];
+    for (NSNumber *modeNum in modes) {
+        TOTranslationTapMode mode = (TOTranslationTapMode)modeNum.integerValue;
+        NSString *label = TOTranslationModeLabel(mode);
+        NSString *title = (m.translationTapMode == mode) ? [NSString stringWithFormat:@"%@ ✓", label] : label;
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            m.translationTapMode = mode;
+            m.mangaTranslationModeEnabled = (mode == TOTranslationTapModeManga);
+            if (mode != TOTranslationTapModeLive) self.liveTranslateEnabled = NO;
+            [m saveSettings];
+
+            if (mode == TOTranslationTapModeManga) {
+                [self showToast:TOUIString(@"تم تفعيل نمط ترجمة المانجا")];
+            } else if (mode == TOTranslationTapModeLive) {
+                [self showToast:TOUIString(@"تم اختيار نمط الترجمه المباشره")];
+            } else {
+                [self showToast:TOUIString(@"تم تفعيل نمط الترجمة العاديه")];
+            }
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
+    [self configurePopover:sheet];
+    [top presentViewController:sheet animated:YES completion:^{
+        TOTranslateControllerTree(sheet);
+    }];
 }
 
 - (void)showSettings {
@@ -2199,11 +2288,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"تحرير النص بعد ترجمة OCR"), (tm.ocrEditAfterTranslateEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))]];
         }]];
 
-        NSString *mangaTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"نمط ترجمة المانجا"), (tm.mangaTranslationModeEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))];
-        [ocrSheet addAction:[UIAlertAction actionWithTitle:mangaTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-            tm.mangaTranslationModeEnabled = !tm.mangaTranslationModeEnabled;
-            [tm saveSettings];
-            [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"نمط ترجمة المانجا"), (tm.mangaTranslationModeEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))]];
+        NSString *modeTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"نمط الترجمه"), TOTranslationModeLabel((TOTranslationTapMode)tm.translationTapMode)];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", modeTitle] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [self showTranslationModeSettings];
         }]];
 
         [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"ترجمة الصفحة OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self startOCR]; }]];
@@ -2227,7 +2314,28 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     }];
 }
 
-- (void)singleTap { [self translateCurrentPage]; }
+- (void)singleTap {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    TOTranslationTapMode mode = (TOTranslationTapMode)m.translationTapMode;
+    switch (mode) {
+        case TOTranslationTapModeManga:
+            [self startOCRForMangaMode:YES];
+            break;
+        case TOTranslationTapModeLive:
+            self.liveTranslateEnabled = !self.liveTranslateEnabled;
+            if (self.liveTranslateEnabled) {
+                [self translateCurrentPage];
+                [self showToast:TOUIString(@"تم تفعيل نمط الترجمه المباشره")];
+            } else {
+                [self showToast:TOUIString(@"تم إيقاف نمط الترجمه المباشره")];
+            }
+            break;
+        case TOTranslationTapModeNormal:
+        default:
+            [self translateCurrentPage];
+            break;
+    }
+}
 
 - (void)doubleTap {
     self.hiddenByDoubleTap = YES;
@@ -2311,6 +2419,20 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 }
 
 @end
+
+%hook UIScrollView
+
+- (void)setContentOffset:(CGPoint)contentOffset {
+    %orig;
+    [[TOFloatingOverlayController shared] handleScrollActivity];
+}
+
+- (void)setContentOffset:(CGPoint)contentOffset animated:(BOOL)animated {
+    %orig;
+    [[TOFloatingOverlayController shared] handleScrollActivity];
+}
+
+%end
 
 %ctor {
     @autoreleasepool {
