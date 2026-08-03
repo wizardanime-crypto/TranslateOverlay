@@ -323,7 +323,63 @@ static NSString *TOUIString(NSString *text) {
     NSString *cached = [m.cache objectForKey:key] ?: m.persistentCache[key];
     if (cached.length > 0) return cached;
 
-    [m translateText:text completion:^(__unused NSString *translated) {}];
+    static NSMutableDictionary<NSString *, NSNumber *> *inFlight;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        inFlight = [NSMutableDictionary dictionary];
+    });
+
+    @synchronized (inFlight) {
+        if (inFlight[key]) return text;
+        inFlight[key] = @YES;
+    }
+
+    NSString *q = [text stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet] ?: @"";
+    NSString *u = [NSString stringWithFormat:@"https://translate.googleapis.com/translate_a/single?client=gtx&sl=ar&tl=%@&dt=t&q=%@", target, q];
+    NSURL *url = [NSURL URLWithString:u];
+    if (!url) {
+        @synchronized (inFlight) {
+            [inFlight removeObjectForKey:key];
+        }
+        return text;
+    }
+
+    [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, __unused NSURLResponse *response, NSError *error) {
+        NSString *translated = text;
+        if (!error && data.length > 0) {
+            id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            if ([json isKindOfClass:[NSArray class]]) {
+                NSArray *top = (NSArray *)json;
+                if (top.count > 0 && [top[0] isKindOfClass:[NSArray class]]) {
+                    NSMutableString *combined = [NSMutableString string];
+                    for (id seg in (NSArray *)top[0]) {
+                        if ([seg isKindOfClass:[NSArray class]]) {
+                            NSArray *piece = (NSArray *)seg;
+                            if (piece.count > 0 && [piece[0] isKindOfClass:[NSString class]]) {
+                                [combined appendString:piece[0]];
+                            }
+                        }
+                    }
+                    if (combined.length > 0) translated = combined;
+                }
+            }
+        }
+
+        if (translated.length > 0) {
+            [m.cache setObject:translated forKey:key];
+            m.persistentCache[key] = translated;
+            if (m.persistentCache.count > 800) {
+                NSString *first = m.persistentCache.allKeys.firstObject;
+                if (first) [m.persistentCache removeObjectForKey:first];
+            }
+            [m saveSettings];
+        }
+
+        @synchronized (inFlight) {
+            [inFlight removeObjectForKey:key];
+        }
+    }] resume];
+
     return text;
 }
 
@@ -350,7 +406,7 @@ static void TOWarmupUILocalization(void) {
     for (NSString *text in phrases) {
         NSString *key = [NSString stringWithFormat:@"ar|%@|%@", target, text];
         if ([m.cache objectForKey:key] || m.persistentCache[key]) continue;
-        [m translateText:text completion:^(__unused NSString *translated) {}];
+        (void)TOUIString(text);
     }
 }
 
@@ -1621,7 +1677,13 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         NSString *current = isSource ? m.sourceLanguage : m.targetLanguage;
         NSString *title = [current isEqualToString:code] ? [NSString stringWithFormat:@"%@ ✓", name] : name;
         [picker addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            if (isSource) m.sourceLanguage = code; else m.targetLanguage = code;
+            if (isSource) {
+                m.sourceLanguage = code;
+            } else {
+                BOOL changed = ![m.targetLanguage isEqualToString:code];
+                m.targetLanguage = code;
+                if (changed) TOWarmupUILocalization();
+            }
             [m saveSettings];
             [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(isSource ? @"المصدر" : @"الهدف"), name]];
         }]];
