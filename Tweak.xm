@@ -16,6 +16,7 @@ static NSString * const kTOTranslationCacheKey = @"to_translation_cache";
 
 static NSString * const kTOOCRTextScaleKey = @"to_ocr_text_scale";
 static NSString * const kTOOCRTextAutoColorEnabledKey = @"to_ocr_text_auto_color_enabled";
+static NSString * const kTOOCRBackgroundAutoColorEnabledKey = @"to_ocr_background_auto_color_enabled";
 static NSString * const kTOOCRManualHueKey = @"to_ocr_manual_hue";
 static NSString * const kTOOCRManualSaturationKey = @"to_ocr_manual_saturation";
 static NSString * const kTOOCRManualBrightnessKey = @"to_ocr_manual_brightness";
@@ -63,6 +64,28 @@ static UIViewController *TOTopViewController(void) {
     return vc;
 }
 
+static BOOL TOGetRGBComponents(UIColor *color, CGFloat *r, CGFloat *g, CGFloat *b) {
+    if (!color) return NO;
+
+    CGFloat rr = 0, gg = 0, bb = 0, aa = 0;
+    if ([color getRed:&rr green:&gg blue:&bb alpha:&aa]) {
+        if (r) *r = rr;
+        if (g) *g = gg;
+        if (b) *b = bb;
+        return YES;
+    }
+
+    CGFloat white = 0;
+    if ([color getWhite:&white alpha:&aa]) {
+        if (r) *r = white;
+        if (g) *g = white;
+        if (b) *b = white;
+        return YES;
+    }
+
+    return NO;
+}
+
 @interface TOTranslationManager : NSObject
 @property (nonatomic, copy) NSString *sourceLanguage;
 @property (nonatomic, copy) NSString *targetLanguage;
@@ -71,6 +94,7 @@ static UIViewController *TOTopViewController(void) {
 
 @property (nonatomic, assign) CGFloat ocrTextScale;
 @property (nonatomic, assign) BOOL ocrAutoColorEnabled;
+@property (nonatomic, assign) BOOL ocrBackgroundAutoColorEnabled;
 @property (nonatomic, assign) CGFloat ocrManualHue;
 @property (nonatomic, assign) CGFloat ocrManualSaturation;
 @property (nonatomic, assign) CGFloat ocrManualBrightness;
@@ -118,6 +142,9 @@ static UIViewController *TOTopViewController(void) {
     NSNumber *autoColor = [d objectForKey:kTOOCRTextAutoColorEnabledKey];
     self.ocrAutoColorEnabled = autoColor ? [autoColor boolValue] : YES;
 
+    NSNumber *autoBackgroundColor = [d objectForKey:kTOOCRBackgroundAutoColorEnabledKey];
+    self.ocrBackgroundAutoColorEnabled = autoBackgroundColor ? [autoBackgroundColor boolValue] : NO;
+
     CGFloat hue = [d doubleForKey:kTOOCRManualHueKey];
     CGFloat sat = [d doubleForKey:kTOOCRManualSaturationKey];
     CGFloat bri = [d doubleForKey:kTOOCRManualBrightnessKey];
@@ -144,6 +171,7 @@ static UIViewController *TOTopViewController(void) {
 
     [d setDouble:self.ocrTextScale forKey:kTOOCRTextScaleKey];
     [d setBool:self.ocrAutoColorEnabled forKey:kTOOCRTextAutoColorEnabledKey];
+    [d setBool:self.ocrBackgroundAutoColorEnabled forKey:kTOOCRBackgroundAutoColorEnabledKey];
     [d setDouble:MIN(MAX(self.ocrManualHue, 0.0), 1.0) forKey:kTOOCRManualHueKey];
     [d setDouble:MIN(MAX(self.ocrManualSaturation, 0.0), 1.0) forKey:kTOOCRManualSaturationKey];
     [d setDouble:MIN(MAX(self.ocrManualBrightness, 0.0), 1.0) forKey:kTOOCRManualBrightnessKey];
@@ -426,6 +454,86 @@ static void TOTranslateViewTree(UIView *view) {
     return [UIColor colorWithRed:(sumR / sumW) green:(sumG / sumW) blue:(sumB / sumW) alpha:1.0];
 }
 
+- (UIColor *)detectedBackgroundColorInImage:(UIImage *)image rect:(CGRect)rect textColor:(UIColor *)textColor {
+    if (!image.CGImage || CGRectIsEmpty(rect)) return nil;
+
+    CGRect expanded = CGRectInset(rect, -6.0, -3.0);
+    CGRect safe = CGRectIntersection(expanded, CGRectMake(0, 0, image.size.width, image.size.height));
+    if (CGRectIsEmpty(safe) || safe.size.width < 2 || safe.size.height < 2) return nil;
+
+    CGFloat scaleX = (CGFloat)CGImageGetWidth(image.CGImage) / image.size.width;
+    CGFloat scaleY = (CGFloat)CGImageGetHeight(image.CGImage) / image.size.height;
+    CGRect pxRect = CGRectIntegral(CGRectMake(safe.origin.x * scaleX, safe.origin.y * scaleY, safe.size.width * scaleX, safe.size.height * scaleY));
+    CGImageRef cropped = CGImageCreateWithImageInRect(image.CGImage, pxRect);
+    if (!cropped) return nil;
+
+    const size_t w = 28;
+    const size_t h = 28;
+    const size_t bpp = 4;
+    const size_t bpr = w * bpp;
+
+    uint8_t *buf = (uint8_t *)calloc(h * bpr, sizeof(uint8_t));
+    if (!buf) {
+        CGImageRelease(cropped);
+        return nil;
+    }
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(buf, w, h, 8, bpr, cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) {
+        free(buf);
+        CGImageRelease(cropped);
+        return nil;
+    }
+
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cropped);
+
+    CGFloat tr = 0, tg = 0, tb = 0;
+    BOOL hasTextColor = TOGetRGBComponents(textColor, &tr, &tg, &tb);
+
+    CGFloat sumR = 0;
+    CGFloat sumG = 0;
+    CGFloat sumB = 0;
+    CGFloat sumW = 0;
+
+    for (size_t y = 0; y < h; y++) {
+        for (size_t x = 0; x < w; x++) {
+            size_t idx = y * bpr + x * bpp;
+            CGFloat r = buf[idx] / 255.0;
+            CGFloat g = buf[idx + 1] / 255.0;
+            CGFloat b = buf[idx + 2] / 255.0;
+            CGFloat a = buf[idx + 3] / 255.0;
+            if (a < 0.15) continue;
+
+            CGFloat maxC = MAX(r, MAX(g, b));
+            CGFloat minC = MIN(r, MIN(g, b));
+            CGFloat sat = (maxC <= 0.0001) ? 0.0 : ((maxC - minC) / maxC);
+
+            if (hasTextColor) {
+                CGFloat dist = fabs(r - tr) + fabs(g - tg) + fabs(b - tb);
+                if (dist < 0.20 && sat > 0.20) continue;
+            }
+
+            CGFloat weight = a * (1.15 - MIN(sat, 1.0));
+            if (weight <= 0.01) continue;
+
+            sumR += r * weight;
+            sumG += g * weight;
+            sumB += b * weight;
+            sumW += weight;
+        }
+    }
+
+    CGContextRelease(ctx);
+    free(buf);
+    CGImageRelease(cropped);
+
+    if (sumW < 0.01) return nil;
+    return [UIColor colorWithRed:(sumR / sumW) green:(sumG / sumW) blue:(sumB / sumW) alpha:1.0];
+}
+
 - (UIImage *)renderTranslatedTextOnImage:(UIImage *)image items:(NSArray<NSDictionary *> *)items {
     if (!image || items.count == 0) return image;
 
@@ -456,7 +564,10 @@ static void TOTranslateViewTree(UIView *view) {
         };
 
         CGRect bgRect = CGRectInset(rect, -2.0, -1.0);
-        UIColor *bgColor = [[m ocrBackgroundUIColor] colorWithAlphaComponent:MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0)];
+        UIColor *bgBase = nil;
+        if (m.ocrBackgroundAutoColorEnabled) bgBase = item[@"detectedBackgroundColor"];
+        if (!bgBase) bgBase = [m ocrBackgroundUIColor];
+        UIColor *bgColor = [bgBase colorWithAlphaComponent:MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0)];
         [bgColor setFill];
         UIBezierPath *bg = [UIBezierPath bezierPathWithRoundedRect:bgRect cornerRadius:3.0];
         [bg fill];
@@ -488,10 +599,12 @@ static void TOTranslateViewTree(UIView *view) {
                     if (top.string.length > 0) {
                         CGRect rect = [self imageRectForNormalizedVisionRect:obs.boundingBox imageSize:image.size];
                         UIColor *autoColor = [self detectedTextColorInImage:image rect:rect];
+                        UIColor *autoBackgroundColor = [self detectedBackgroundColorInImage:image rect:rect textColor:autoColor];
                         [items addObject:@{
                             @"source": top.string,
                             @"rect": [NSValue valueWithCGRect:rect],
-                            @"detectedColor": autoColor ?: UIColor.whiteColor
+                            @"detectedColor": autoColor ?: UIColor.whiteColor,
+                            @"detectedBackgroundColor": autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0]
                         }];
                     }
                 }
@@ -549,6 +662,7 @@ static void TOTranslateViewTree(UIView *view) {
 @interface TOOCRAppearanceViewController : UIViewController
 @property (nonatomic, weak) TOFloatingOverlayController *overlayController;
 @property (nonatomic, strong) UISwitch *autoColorSwitch;
+@property (nonatomic, strong) UISwitch *autoBackgroundColorSwitch;
 @property (nonatomic, strong) UISlider *hueSlider;
 @property (nonatomic, strong) UISlider *saturationSlider;
 @property (nonatomic, strong) UISlider *bgHueSlider;
@@ -726,13 +840,19 @@ static void TOTranslateViewTree(UIView *view) {
     self.bgColorPreview.layer.borderColor = [[UIColor whiteColor] colorWithAlphaComponent:0.35].CGColor;
     [card addSubview:self.bgColorPreview];
 
-    UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(14, 426, card.bounds.size.width - 28, 32)];
-    hint.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    hint.numberOfLines = 1;
-    hint.text = @"يمكنك ضبط لون الخلفية وشفافيتها بدون التأثير على بقية الوظائف.";
-    hint.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.84];
-    hint.font = [UIFont systemFontOfSize:12];
-    [card addSubview:hint];
+    UILabel *autoBgLabel = [[UILabel alloc] initWithFrame:CGRectMake(14, 426, card.bounds.size.width - 130, 22)];
+    autoBgLabel.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    autoBgLabel.text = @"اللون التلقائي لخلفية النص";
+    autoBgLabel.textColor = UIColor.whiteColor;
+    autoBgLabel.font = [UIFont systemFontOfSize:13 weight:UIFontWeightSemibold];
+    [card addSubview:autoBgLabel];
+
+    self.autoBackgroundColorSwitch = [[UISwitch alloc] initWithFrame:CGRectMake(card.bounds.size.width - 66, 421, 52, 32)];
+    self.autoBackgroundColorSwitch.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    self.autoBackgroundColorSwitch.on = m.ocrBackgroundAutoColorEnabled;
+    self.autoBackgroundColorSwitch.onTintColor = [UIColor colorWithRed:0.18 green:0.64 blue:0.95 alpha:1.0];
+    [self.autoBackgroundColorSwitch addTarget:self action:@selector(switchChanged:) forControlEvents:UIControlEventValueChanged];
+    [card addSubview:self.autoBackgroundColorSwitch];
 
     [self refreshUI];
 }
@@ -740,6 +860,7 @@ static void TOTranslateViewTree(UIView *view) {
 - (void)refreshUI {
     TOTranslationManager *m = [TOTranslationManager shared];
     m.ocrAutoColorEnabled = self.autoColorSwitch.on;
+    m.ocrBackgroundAutoColorEnabled = self.autoBackgroundColorSwitch.on;
     m.ocrManualHue = self.hueSlider.value;
     m.ocrManualSaturation = self.saturationSlider.value;
     m.ocrBackgroundHue = self.bgHueSlider.value;
@@ -760,6 +881,12 @@ static void TOTranslateViewTree(UIView *view) {
     self.saturationSlider.enabled = manualEnabled;
     self.hueSlider.alpha = manualEnabled ? 1.0 : 0.5;
     self.saturationSlider.alpha = manualEnabled ? 1.0 : 0.5;
+
+    BOOL backgroundManualEnabled = !self.autoBackgroundColorSwitch.on;
+    self.bgHueSlider.enabled = backgroundManualEnabled;
+    self.bgSaturationSlider.enabled = backgroundManualEnabled;
+    self.bgHueSlider.alpha = backgroundManualEnabled ? 1.0 : 0.5;
+    self.bgSaturationSlider.alpha = backgroundManualEnabled ? 1.0 : 0.5;
 }
 
 - (void)persist {
@@ -1217,6 +1344,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     TOTranslationManager *m = TOTranslationManager.shared;
 
     NSString *autoColorTitle = m.ocrAutoColorEnabled ? @"تعطيل اللون التلقائي للنص" : @"تفعيل اللون التلقائي للنص";
+    NSString *autoBackgroundTitle = m.ocrBackgroundAutoColorEnabled ? @"تعطيل اللون التلقائي لخلفية النص" : @"تفعيل اللون التلقائي لخلفية النص";
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"إعدادات مظهر OCR"
                                                                    message:@"تخصيص لون النص والخلفية"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
@@ -1225,6 +1353,12 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         m.ocrAutoColorEnabled = !m.ocrAutoColorEnabled;
         [m saveSettings];
         [self showToast:(m.ocrAutoColorEnabled ? @"تم تفعيل اللون التلقائي" : @"تم تعطيل اللون التلقائي")];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:autoBackgroundTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        m.ocrBackgroundAutoColorEnabled = !m.ocrBackgroundAutoColorEnabled;
+        [m saveSettings];
+        [self showToast:(m.ocrBackgroundAutoColorEnabled ? @"تم تفعيل اللون التلقائي لخلفية النص" : @"تم تعطيل اللون التلقائي لخلفية النص")];
     }]];
 
     [sheet addAction:[UIAlertAction actionWithTitle:@"لون النص: الدرجة اللونية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
