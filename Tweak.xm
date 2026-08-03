@@ -393,7 +393,7 @@ static void TOWarmupUILocalization(void) {
     dispatch_once(&onceToken, ^{
         phrases = @[
             @"إعدادات الترجمة", @"الترجمه من و إلى", @"إعدادات OCR", @"أخرى", @"صفحة المطور",
-            @"اختيار لغة المصدر", @"اختيار لغة الهدف", @"إعدادات مظهر OCR", @"تغيير حجم نص OCR",
+            @"الترجمه من", @"الترجمة إلى", @"اختيار لغة المصدر", @"اختيار لغة الهدف", @"إعدادات مظهر OCR", @"تغيير حجم نص OCR",
             @"إعدادات لون النص", @"إعدادات لون الخلفية", @"تفعيل اللون التلقائي للنص", @"تعطيل اللون التلقائي للنص",
             @"تفعيل اللون التلقائي لخلفية النص", @"تعطيل اللون التلقائي لخلفية النص",
             @"لون النص: الدرجة اللونية", @"لون النص: التشبع", @"لون الخلفية: الدرجة اللونية",
@@ -1326,8 +1326,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
     [self.view addSubview:close];
 
     UIView *translationCard = [self sectionCardWithTitle:@"إعدادات الترجمة" y:92 height:138];
-    [translationCard addSubview:[self sectionButtonWithTitle:@"اختيار لغة المصدر" y:44 action:@selector(sourcePressed)]];
-    [translationCard addSubview:[self sectionButtonWithTitle:@"اختيار لغة الهدف" y:88 action:@selector(targetPressed)]];
+    [translationCard addSubview:[self sectionButtonWithTitle:@"الترجمه من" y:44 action:@selector(sourcePressed)]];
+    [translationCard addSubview:[self sectionButtonWithTitle:@"الترجمة إلى" y:88 action:@selector(targetPressed)]];
     [self.view addSubview:translationCard];
 
     UIView *ocrCard = [self sectionCardWithTitle:@"إعدادات OCR" y:242 height:182];
@@ -1682,7 +1682,11 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             } else {
                 BOOL changed = ![m.targetLanguage isEqualToString:code];
                 m.targetLanguage = code;
-                if (changed) TOWarmupUILocalization();
+                if (changed) {
+                    TOWarmupUILocalization();
+                    UIViewController *visible = TOTopViewController();
+                    if (visible) TOTranslateControllerTree(visible);
+                }
             }
             [m saveSettings];
             [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(isSource ? @"المصدر" : @"الهدف"), name]];
@@ -1874,8 +1878,8 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         UIAlertController *langSheet = [UIAlertController alertControllerWithTitle:TOUIString(@"الترجمه من و إلى")
                                                                             message:nil
                                                                      preferredStyle:UIAlertControllerStyleActionSheet];
-        [langSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"اختيار لغة المصدر") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showLanguagePicker:YES]; }]];
-        [langSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"اختيار لغة الهدف") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showLanguagePicker:NO]; }]];
+        [langSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"الترجمه من") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showLanguagePicker:YES]; }]];
+        [langSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"الترجمة إلى") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showLanguagePicker:NO]; }]];
         [langSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
         [self configurePopover:langSheet];
         [menuTop presentViewController:langSheet animated:YES completion:^{
