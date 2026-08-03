@@ -587,6 +587,9 @@ static void TOTranslateViewTree(UIView *view) {
 - (void)openDeveloperPage;
 - (void)showTextColorPresets;
 - (void)showBackgroundColorPresets;
+- (NSArray<NSDictionary *> *)colorStops;
+- (NSDictionary *)colorStopForNormalized:(CGFloat)normalized;
+- (CGFloat)normalizedValueForHue:(CGFloat)h saturation:(CGFloat)s brightness:(CGFloat)b;
 @end
 
 @implementation TOOCRAppearanceViewController
@@ -1040,26 +1043,94 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     [top presentViewController:alert animated:YES completion:nil];
 }
 
+- (NSArray<NSDictionary *> *)colorStops {
+    static NSArray<NSDictionary *> *stops;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        stops = @[
+            @{@"name": @"أسود", @"h": @0.0, @"s": @0.0, @"b": @0.0},
+            @{@"name": @"أحمر", @"h": @0.0, @"s": @0.85, @"b": @1.0},
+            @{@"name": @"برتقالي", @"h": @0.08, @"s": @0.85, @"b": @1.0},
+            @{@"name": @"أصفر", @"h": @0.14, @"s": @0.85, @"b": @1.0},
+            @{@"name": @"ليموني", @"h": @0.20, @"s": @0.75, @"b": @1.0},
+            @{@"name": @"أخضر", @"h": @0.33, @"s": @0.75, @"b": @1.0},
+            @{@"name": @"فيروزي", @"h": @0.45, @"s": @0.75, @"b": @1.0},
+            @{@"name": @"سماوي", @"h": @0.52, @"s": @0.70, @"b": @1.0},
+            @{@"name": @"أزرق", @"h": @0.62, @"s": @0.75, @"b": @1.0},
+            @{@"name": @"نيلي", @"h": @0.70, @"s": @0.70, @"b": @1.0},
+            @{@"name": @"بنفسجي", @"h": @0.78, @"s": @0.70, @"b": @1.0},
+            @{@"name": @"وردي", @"h": @0.90, @"s": @0.55, @"b": @1.0},
+            @{@"name": @"رمادي", @"h": @0.0, @"s": @0.0, @"b": @0.55},
+            @{@"name": @"أبيض", @"h": @0.0, @"s": @0.0, @"b": @1.0}
+        ];
+    });
+    return stops;
+}
+
+- (NSDictionary *)colorStopForNormalized:(CGFloat)normalized {
+    NSArray<NSDictionary *> *stops = [self colorStops];
+    NSInteger last = (NSInteger)stops.count - 1;
+    NSInteger idx = (NSInteger)lround(MIN(MAX(normalized, 0.0), 1.0) * last);
+    return stops[idx];
+}
+
+- (CGFloat)normalizedValueForHue:(CGFloat)h saturation:(CGFloat)s brightness:(CGFloat)b {
+    NSArray<NSDictionary *> *stops = [self colorStops];
+    NSInteger bestIdx = 0;
+    CGFloat bestDist = CGFLOAT_MAX;
+    for (NSInteger i = 0; i < (NSInteger)stops.count; i++) {
+        NSDictionary *item = stops[i];
+        CGFloat ih = [item[@"h"] doubleValue];
+        CGFloat is = [item[@"s"] doubleValue];
+        CGFloat ib = [item[@"b"] doubleValue];
+        CGFloat d = fabs(ih - h) + fabs(is - s) + fabs(ib - b);
+        if (d < bestDist) {
+            bestDist = d;
+            bestIdx = i;
+        }
+    }
+    if (stops.count <= 1) return 0;
+    return (CGFloat)bestIdx / (CGFloat)(stops.count - 1);
+}
+
 - (void)handlePopupSliderChanged:(UISlider *)slider {
     TOTranslationManager *m = [TOTranslationManager shared];
     self.activeSliderMode = slider.tag;
 
     switch (self.activeSliderMode) {
         case TOOverlaySliderModeTextHue:
-            m.ocrManualHue = slider.value;
-            self.activeSliderValueLabel.text = [NSString stringWithFormat:@"Hue: %.0f%%", slider.value * 100.0];
+        {
+            NSArray<NSDictionary *> *stops = [self colorStops];
+            NSInteger last = (NSInteger)stops.count - 1;
+            NSInteger idx = (NSInteger)lround(MIN(MAX(slider.value, 0.0), 1.0) * last);
+            slider.value = (CGFloat)idx / (CGFloat)last;
+            NSDictionary *stop = stops[idx];
+            m.ocrManualHue = [stop[@"h"] doubleValue];
+            m.ocrManualSaturation = [stop[@"s"] doubleValue];
+            m.ocrManualBrightness = [stop[@"b"] doubleValue];
+            self.activeSliderValueLabel.text = [NSString stringWithFormat:@"%@", stop[@"name"]];
             self.activeColorPreviewView.backgroundColor = [m ocrManualUIColor];
             break;
+        }
         case TOOverlaySliderModeTextSaturation:
             m.ocrManualSaturation = slider.value;
             self.activeSliderValueLabel.text = [NSString stringWithFormat:@"Saturation: %.0f%%", slider.value * 100.0];
             self.activeColorPreviewView.backgroundColor = [m ocrManualUIColor];
             break;
         case TOOverlaySliderModeBackgroundHue:
-            m.ocrBackgroundHue = slider.value;
-            self.activeSliderValueLabel.text = [NSString stringWithFormat:@"Hue: %.0f%%", slider.value * 100.0];
+        {
+            NSArray<NSDictionary *> *stops = [self colorStops];
+            NSInteger last = (NSInteger)stops.count - 1;
+            NSInteger idx = (NSInteger)lround(MIN(MAX(slider.value, 0.0), 1.0) * last);
+            slider.value = (CGFloat)idx / (CGFloat)last;
+            NSDictionary *stop = stops[idx];
+            m.ocrBackgroundHue = [stop[@"h"] doubleValue];
+            m.ocrBackgroundSaturation = [stop[@"s"] doubleValue];
+            m.ocrBackgroundBrightness = [stop[@"b"] doubleValue] * 0.45;
+            self.activeSliderValueLabel.text = [NSString stringWithFormat:@"%@", stop[@"name"]];
             self.activeColorPreviewView.backgroundColor = [m ocrBackgroundUIColor];
             break;
+        }
         case TOOverlaySliderModeBackgroundSaturation:
             m.ocrBackgroundSaturation = slider.value;
             self.activeSliderValueLabel.text = [NSString stringWithFormat:@"Saturation: %.0f%%", slider.value * 100.0];
@@ -1235,7 +1306,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                                      mode:TOOverlaySliderModeTextHue
                                 minValue:0
                                 maxValue:1
-                            currentValue:m.ocrManualHue
+                            currentValue:[self normalizedValueForHue:m.ocrManualHue saturation:m.ocrManualSaturation brightness:m.ocrManualBrightness]
                             showsPreview:YES
                        showsSizePreview:NO];
     }]];
@@ -1255,7 +1326,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                                      mode:TOOverlaySliderModeBackgroundHue
                                 minValue:0
                                 maxValue:1
-                            currentValue:m.ocrBackgroundHue
+                            currentValue:[self normalizedValueForHue:m.ocrBackgroundHue saturation:m.ocrBackgroundSaturation brightness:m.ocrBackgroundBrightness]
                             showsPreview:YES
                        showsSizePreview:NO];
     }]];
