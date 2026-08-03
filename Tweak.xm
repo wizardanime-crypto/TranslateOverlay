@@ -18,9 +18,11 @@ static NSString * const kTOOCRTextScaleKey = @"to_ocr_text_scale";
 static NSString * const kTOOCRTextAutoColorEnabledKey = @"to_ocr_text_auto_color_enabled";
 static NSString * const kTOOCRManualHueKey = @"to_ocr_manual_hue";
 static NSString * const kTOOCRManualSaturationKey = @"to_ocr_manual_saturation";
+static NSString * const kTOOCRManualBrightnessKey = @"to_ocr_manual_brightness";
 static NSString * const kTOOCRBackgroundAlphaKey = @"to_ocr_background_alpha";
 static NSString * const kTOOCRBackgroundHueKey = @"to_ocr_background_hue";
 static NSString * const kTOOCRBackgroundSaturationKey = @"to_ocr_background_saturation";
+static NSString * const kTOOCRBackgroundBrightnessKey = @"to_ocr_background_brightness";
 
 static BOOL TOShouldTranslateText(NSString *text) {
     if (text.length == 0) return NO;
@@ -71,9 +73,11 @@ static UIViewController *TOTopViewController(void) {
 @property (nonatomic, assign) BOOL ocrAutoColorEnabled;
 @property (nonatomic, assign) CGFloat ocrManualHue;
 @property (nonatomic, assign) CGFloat ocrManualSaturation;
+@property (nonatomic, assign) CGFloat ocrManualBrightness;
 @property (nonatomic, assign) CGFloat ocrBackgroundAlpha;
 @property (nonatomic, assign) CGFloat ocrBackgroundHue;
 @property (nonatomic, assign) CGFloat ocrBackgroundSaturation;
+@property (nonatomic, assign) CGFloat ocrBackgroundBrightness;
 
 + (instancetype)shared;
 - (void)loadSettings;
@@ -116,16 +120,20 @@ static UIViewController *TOTopViewController(void) {
 
     CGFloat hue = [d doubleForKey:kTOOCRManualHueKey];
     CGFloat sat = [d doubleForKey:kTOOCRManualSaturationKey];
+    CGFloat bri = [d doubleForKey:kTOOCRManualBrightnessKey];
     self.ocrManualHue = (hue >= 0.0 && hue <= 1.0) ? hue : 0.14;
     self.ocrManualSaturation = (sat >= 0.0 && sat <= 1.0) ? sat : 0.75;
+    self.ocrManualBrightness = (bri >= 0.0 && bri <= 1.0) ? bri : 1.0;
 
     CGFloat bg = [d doubleForKey:kTOOCRBackgroundAlphaKey];
     self.ocrBackgroundAlpha = (bg >= 0.0 && bg <= 1.0) ? bg : 0.65;
 
     CGFloat bgHue = [d doubleForKey:kTOOCRBackgroundHueKey];
     CGFloat bgSat = [d doubleForKey:kTOOCRBackgroundSaturationKey];
+    CGFloat bgBri = [d doubleForKey:kTOOCRBackgroundBrightnessKey];
     self.ocrBackgroundHue = (bgHue >= 0.0 && bgHue <= 1.0) ? bgHue : 0.0;
     self.ocrBackgroundSaturation = (bgSat >= 0.0 && bgSat <= 1.0) ? bgSat : 0.0;
+    self.ocrBackgroundBrightness = (bgBri >= 0.0 && bgBri <= 1.0) ? bgBri : 0.28;
 }
 
 - (void)saveSettings {
@@ -138,22 +146,26 @@ static UIViewController *TOTopViewController(void) {
     [d setBool:self.ocrAutoColorEnabled forKey:kTOOCRTextAutoColorEnabledKey];
     [d setDouble:MIN(MAX(self.ocrManualHue, 0.0), 1.0) forKey:kTOOCRManualHueKey];
     [d setDouble:MIN(MAX(self.ocrManualSaturation, 0.0), 1.0) forKey:kTOOCRManualSaturationKey];
+    [d setDouble:MIN(MAX(self.ocrManualBrightness, 0.0), 1.0) forKey:kTOOCRManualBrightnessKey];
     [d setDouble:MIN(MAX(self.ocrBackgroundAlpha, 0.0), 1.0) forKey:kTOOCRBackgroundAlphaKey];
     [d setDouble:MIN(MAX(self.ocrBackgroundHue, 0.0), 1.0) forKey:kTOOCRBackgroundHueKey];
     [d setDouble:MIN(MAX(self.ocrBackgroundSaturation, 0.0), 1.0) forKey:kTOOCRBackgroundSaturationKey];
+    [d setDouble:MIN(MAX(self.ocrBackgroundBrightness, 0.0), 1.0) forKey:kTOOCRBackgroundBrightnessKey];
     [d synchronize];
 }
 
 - (UIColor *)ocrManualUIColor {
     CGFloat h = MIN(MAX(self.ocrManualHue, 0.0), 1.0);
     CGFloat s = MIN(MAX(self.ocrManualSaturation, 0.0), 1.0);
-    return [UIColor colorWithHue:h saturation:s brightness:1.0 alpha:1.0];
+    CGFloat b = MIN(MAX(self.ocrManualBrightness, 0.0), 1.0);
+    return [UIColor colorWithHue:h saturation:s brightness:b alpha:1.0];
 }
 
 - (UIColor *)ocrBackgroundUIColor {
     CGFloat h = MIN(MAX(self.ocrBackgroundHue, 0.0), 1.0);
     CGFloat s = MIN(MAX(self.ocrBackgroundSaturation, 0.0), 1.0);
-    return [UIColor colorWithHue:h saturation:s brightness:0.28 alpha:1.0];
+    CGFloat b = MIN(MAX(self.ocrBackgroundBrightness, 0.0), 1.0);
+    return [UIColor colorWithHue:h saturation:s brightness:b alpha:1.0];
 }
 
 - (NSString *)detectedLanguage:(NSString *)text {
@@ -573,6 +585,8 @@ static void TOTranslateViewTree(UIView *view) {
 - (void)showOCRTextSizePicker;
 - (void)showLanguagePicker:(BOOL)isSource;
 - (void)openDeveloperPage;
+- (void)showTextColorPresets;
+- (void)showBackgroundColorPresets;
 @end
 
 @implementation TOOCRAppearanceViewController
@@ -1071,6 +1085,83 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     [m saveSettings];
 }
 
+- (void)showTextColorPresets {
+    UIViewController *top = TOTopViewController();
+    if (!top) return;
+    TOTranslationManager *m = TOTranslationManager.shared;
+
+    NSArray<NSDictionary *> *presets = @[
+        @{@"name": @"أبيض", @"h": @0.0, @"s": @0.0, @"b": @1.0},
+        @{@"name": @"أسود", @"h": @0.0, @"s": @0.0, @"b": @0.0},
+        @{@"name": @"أحمر", @"h": @0.0, @"s": @0.85, @"b": @1.0},
+        @{@"name": @"برتقالي", @"h": @0.08, @"s": @0.85, @"b": @1.0},
+        @{@"name": @"أصفر", @"h": @0.14, @"s": @0.85, @"b": @1.0},
+        @{@"name": @"ليموني", @"h": @0.20, @"s": @0.70, @"b": @1.0},
+        @{@"name": @"أخضر", @"h": @0.33, @"s": @0.75, @"b": @1.0},
+        @{@"name": @"فيروزي", @"h": @0.45, @"s": @0.75, @"b": @1.0},
+        @{@"name": @"سماوي", @"h": @0.52, @"s": @0.70, @"b": @1.0},
+        @{@"name": @"أزرق", @"h": @0.62, @"s": @0.75, @"b": @1.0},
+        @{@"name": @"نيلي", @"h": @0.70, @"s": @0.70, @"b": @1.0},
+        @{@"name": @"بنفسجي", @"h": @0.78, @"s": @0.70, @"b": @1.0},
+        @{@"name": @"وردي", @"h": @0.90, @"s": @0.55, @"b": @1.0}
+    ];
+
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"ألوان النص الجاهزة"
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSDictionary *item in presets) {
+        NSString *name = item[@"name"];
+        [sheet addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            m.ocrManualHue = [item[@"h"] doubleValue];
+            m.ocrManualSaturation = [item[@"s"] doubleValue];
+            m.ocrManualBrightness = [item[@"b"] doubleValue];
+            [m saveSettings];
+            [self showToast:[NSString stringWithFormat:@"لون النص: %@", name]];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
+    [self configurePopover:sheet];
+    [top presentViewController:sheet animated:YES completion:nil];
+}
+
+- (void)showBackgroundColorPresets {
+    UIViewController *top = TOTopViewController();
+    if (!top) return;
+    TOTranslationManager *m = TOTranslationManager.shared;
+
+    NSArray<NSDictionary *> *presets = @[
+        @{@"name": @"أبيض", @"h": @0.0, @"s": @0.0, @"b": @1.0},
+        @{@"name": @"أسود", @"h": @0.0, @"s": @0.0, @"b": @0.0},
+        @{@"name": @"رمادي داكن", @"h": @0.0, @"s": @0.0, @"b": @0.20},
+        @{@"name": @"رمادي", @"h": @0.0, @"s": @0.0, @"b": @0.45},
+        @{@"name": @"أحمر", @"h": @0.0, @"s": @0.75, @"b": @0.35},
+        @{@"name": @"برتقالي", @"h": @0.08, @"s": @0.80, @"b": @0.35},
+        @{@"name": @"أصفر", @"h": @0.14, @"s": @0.80, @"b": @0.36},
+        @{@"name": @"أخضر", @"h": @0.33, @"s": @0.70, @"b": @0.34},
+        @{@"name": @"سماوي", @"h": @0.52, @"s": @0.70, @"b": @0.34},
+        @{@"name": @"أزرق", @"h": @0.62, @"s": @0.70, @"b": @0.34},
+        @{@"name": @"بنفسجي", @"h": @0.78, @"s": @0.70, @"b": @0.34},
+        @{@"name": @"وردي", @"h": @0.90, @"s": @0.55, @"b": @0.35}
+    ];
+
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"ألوان الخلفية الجاهزة"
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    for (NSDictionary *item in presets) {
+        NSString *name = item[@"name"];
+        [sheet addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            m.ocrBackgroundHue = [item[@"h"] doubleValue];
+            m.ocrBackgroundSaturation = [item[@"s"] doubleValue];
+            m.ocrBackgroundBrightness = [item[@"b"] doubleValue];
+            [m saveSettings];
+            [self showToast:[NSString stringWithFormat:@"لون الخلفية: %@", name]];
+        }]];
+    }
+    [sheet addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
+    [self configurePopover:sheet];
+    [top presentViewController:sheet animated:YES completion:nil];
+}
+
 - (void)showLanguagePicker:(BOOL)isSource {
     UIViewController *top = TOTopViewController();
     if (!top) return;
@@ -1135,6 +1226,10 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [self showToast:(m.ocrAutoColorEnabled ? @"تم تفعيل اللون التلقائي" : @"تم تعطيل اللون التلقائي")];
     }]];
 
+    [sheet addAction:[UIAlertAction actionWithTitle:@"ألوان النص الجاهزة" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self showTextColorPresets];
+    }]];
+
     [sheet addAction:[UIAlertAction actionWithTitle:@"لون النص: الدرجة اللونية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         [self presentSliderPopupWithTitle:@"لون النص - الدرجة اللونية"
                                      mode:TOOverlaySliderModeTextHue
@@ -1163,6 +1258,10 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                             currentValue:m.ocrBackgroundHue
                             showsPreview:YES
                        showsSizePreview:NO];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:@"ألوان الخلفية الجاهزة" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self showBackgroundColorPresets];
     }]];
 
     [sheet addAction:[UIAlertAction actionWithTitle:@"لون الخلفية: التشبع" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -1250,10 +1349,10 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [menuTop presentViewController:langSheet animated:YES completion:nil];
     }]];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"قسم OCR ▸" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+    [sheet addAction:[UIAlertAction actionWithTitle:@"إعدادات الترجمة ▸" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         UIViewController *menuTop = TOTopViewController();
         if (!menuTop) return;
-        UIAlertController *ocrSheet = [UIAlertController alertControllerWithTitle:@"قسم OCR"
+        UIAlertController *ocrSheet = [UIAlertController alertControllerWithTitle:@"إعدادات الترجمة"
                                                                            message:nil
                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
         [ocrSheet addAction:[UIAlertAction actionWithTitle:@"ترجمة الصفحة OCR" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self startOCR]; }]];
