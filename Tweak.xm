@@ -459,6 +459,24 @@ static void TOTranslateControllerTree(UIViewController *controller) {
     });
 }
 
+static void TOForceImmediateUILocalizationRefresh(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        UIWindow *w = TOActiveWindow();
+        if (!w) return;
+
+        TOTranslateViewTree(w);
+        if (w.rootViewController) TOTranslateControllerTree(w.rootViewController);
+
+        // Run a second pass right after action-sheet dismissal completes.
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.28 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            UIWindow *w2 = TOActiveWindow();
+            if (!w2) return;
+            TOTranslateViewTree(w2);
+            if (w2.rootViewController) TOTranslateControllerTree(w2.rootViewController);
+        });
+    });
+}
+
 @interface TOOCRResultsViewController : UIViewController
 @property (nonatomic, strong) UIImage *screenshot;
 @end
@@ -1684,8 +1702,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                 m.targetLanguage = code;
                 if (changed) {
                     TOWarmupUILocalization();
-                    UIViewController *visible = TOTopViewController();
-                    if (visible) TOTranslateControllerTree(visible);
+                    TOForceImmediateUILocalizationRefresh();
                 }
             }
             [m saveSettings];
