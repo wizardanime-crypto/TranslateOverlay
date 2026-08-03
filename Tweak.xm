@@ -179,7 +179,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     }
 
     CGFloat scale = [d doubleForKey:kTOOCRTextScaleKey];
-    self.ocrTextScale = (scale >= 0.7 && scale <= 2.0) ? scale : 1.0;
+    self.ocrTextScale = (scale >= 0.01 && scale <= 2.0) ? scale : 1.0;
 
     NSNumber *autoColor = [d objectForKey:kTOOCRTextAutoColorEnabledKey];
     self.ocrAutoColorEnabled = autoColor ? [autoColor boolValue] : YES;
@@ -561,7 +561,7 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         CGFloat scale = m.ocrTextScale > 0.01 ? m.ocrTextScale : 1.0;
         NSString *sourceText = item[@"source"] ?: text;
         CGFloat originalFit = TOFittedFontSizeForText(sourceText, rect, 8.0, 34.0);
-        CGFloat fontSize = MAX(8.0, MIN(40.0, originalFit * scale));
+        CGFloat fontSize = MAX(1.0, MIN(40.0, originalFit * scale));
         UIColor *fg = nil;
         if (m.ocrAutoColorEnabled) fg = item[@"detectedColor"];
         if (!fg) fg = [m ocrManualUIColor];
@@ -593,7 +593,7 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
                                       attributes:attrs
                                          context:nil].size;
             if (measured.height <= textRect.size.height + 0.5) break;
-            fontSize = MAX(8.0, fontSize - 1.0);
+            fontSize = MAX(1.0, fontSize - 1.0);
         }
 
         CGRect drawRect = textRect;
@@ -1937,7 +1937,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         case TOOverlaySliderModeTextSize: {
             m.ocrTextScale = slider.value;
             self.activeSliderValueLabel.text = [NSString stringWithFormat:@"%.0f%%", slider.value * 100.0];
-            CGFloat size = MAX(11.0, MIN(32.0, 16.0 * slider.value));
+            CGFloat size = MAX(1.0, MIN(32.0, 16.0 * slider.value));
             self.activeSizePreviewLabel.font = [UIFont boldSystemFontOfSize:size];
             self.activeSizePreviewLabel.text = [NSString stringWithFormat:@"معاينة %.0f%%", slider.value * 100.0];
             break;
@@ -1995,7 +1995,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     TOTranslationManager *m = TOTranslationManager.shared;
     [self presentSliderPopupWithTitle:TOUIString(@"حجم نص OCR")
                                  mode:TOOverlaySliderModeTextSize
-                            minValue:0.7
+                           minValue:0.01
                             maxValue:2.0
                         currentValue:m.ocrTextScale
                         showsPreview:NO
