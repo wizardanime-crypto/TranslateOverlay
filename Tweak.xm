@@ -1124,7 +1124,16 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             NSDictionary *stop = stops[idx];
             m.ocrBackgroundHue = [stop[@"h"] doubleValue];
             m.ocrBackgroundSaturation = [stop[@"s"] doubleValue];
-            m.ocrBackgroundBrightness = [stop[@"b"] doubleValue] * 0.45;
+            CGFloat stopBrightness = [stop[@"b"] doubleValue];
+            CGFloat stopSaturation = [stop[@"s"] doubleValue];
+            // Preserve pure white/black endpoints, while keeping colored stops dimmed for readability.
+            if (stopSaturation <= 0.001 && stopBrightness >= 0.999) {
+                m.ocrBackgroundBrightness = 1.0;
+            } else if (stopSaturation <= 0.001 && stopBrightness <= 0.001) {
+                m.ocrBackgroundBrightness = 0.0;
+            } else {
+                m.ocrBackgroundBrightness = stopBrightness * 0.45;
+            }
             self.activeSliderValueLabel.text = [NSString stringWithFormat:@"%@", stop[@"name"]];
             self.activeColorPreviewView.backgroundColor = [m ocrBackgroundUIColor];
             break;
@@ -1320,10 +1329,10 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                                                                    message:msg
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"قسم الترجمة ▸" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+    [sheet addAction:[UIAlertAction actionWithTitle:@"الترجمه من و إلى ▸" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         UIViewController *menuTop = TOTopViewController();
         if (!menuTop) return;
-        UIAlertController *langSheet = [UIAlertController alertControllerWithTitle:@"قسم الترجمة"
+        UIAlertController *langSheet = [UIAlertController alertControllerWithTitle:@"الترجمه من و إلى"
                                                                             message:nil
                                                                      preferredStyle:UIAlertControllerStyleActionSheet];
         [langSheet addAction:[UIAlertAction actionWithTitle:@"اختيار لغة المصدر" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showLanguagePicker:YES]; }]];
