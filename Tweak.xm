@@ -31,6 +31,35 @@ static BOOL TOShouldTranslateText(NSString *text) {
     return trim.length > 0 && trim.length <= 2500;
 }
 
+static NSString *TONormalizedLocaleIdentifier(NSString *languageCode) {
+    if (languageCode.length == 0) return @"en";
+    NSString *code = [languageCode stringByReplacingOccurrencesOfString:@"_" withString:@"-"];
+    if ([code caseInsensitiveCompare:@"zh-CN"] == NSOrderedSame) return @"zh-Hans";
+    if ([code caseInsensitiveCompare:@"zh-TW"] == NSOrderedSame) return @"zh-Hant";
+    return code;
+}
+
+static NSString *TOBaseLanguageCode(NSString *languageCode) {
+    NSString *norm = TONormalizedLocaleIdentifier(languageCode);
+    NSArray<NSString *> *parts = [norm componentsSeparatedByString:@"-"];
+    return parts.firstObject ?: norm;
+}
+
+static NSString *TODisplayLanguageName(NSString *languageCode, NSString *displayLanguageCode, NSString *fallback) {
+    if (languageCode.length == 0) return fallback ?: @"";
+    if ([languageCode isEqualToString:@"auto"]) return fallback ?: @"auto";
+
+    NSString *displayLocaleID = TONormalizedLocaleIdentifier(displayLanguageCode);
+    NSLocale *displayLocale = [NSLocale localeWithLocaleIdentifier:displayLocaleID.length > 0 ? displayLocaleID : @"en"];
+    NSString *baseCode = TOBaseLanguageCode(languageCode);
+    NSString *name = [displayLocale localizedStringForLanguageCode:baseCode];
+    if (name.length == 0) {
+        NSLocale *enLocale = [NSLocale localeWithLocaleIdentifier:@"en"];
+        name = [enLocale localizedStringForLanguageCode:baseCode];
+    }
+    return name.length > 0 ? name : (fallback ?: languageCode);
+}
+
 static UIWindow *TOActiveWindow(void) {
     UIApplication *app = UIApplication.sharedApplication;
     if (@available(iOS 13.0, *)) {
@@ -321,6 +350,17 @@ static void TOTranslateViewTree(UIView *view) {
     for (UIView *sub in view.subviews) TOTranslateViewTree(sub);
 }
 
+static void TOTranslateControllerTree(UIViewController *controller) {
+    if (!controller) return;
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (!controller.view) return;
+        TOTranslateViewTree(controller.view);
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            if (controller.view.window) TOTranslateViewTree(controller.view);
+        });
+    });
+}
+
 @interface TOOCRResultsViewController : UIViewController
 @property (nonatomic, strong) UIImage *screenshot;
 @end
@@ -355,6 +395,11 @@ static void TOTranslateViewTree(UIView *view) {
     imageView.clipsToBounds = YES;
     imageView.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.04];
     [self.view addSubview:imageView];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    TOTranslateControllerTree(self);
 }
 
 - (void)closePressed { [self dismissViewControllerAnimated:YES completion:nil]; }
@@ -1070,6 +1115,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
     [self refreshUI];
 }
 
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    TOTranslateControllerTree(self);
+}
+
 - (void)refreshUI {
     TOTranslationManager *m = [TOTranslationManager shared];
     m.ocrAutoColorEnabled = self.autoColorSwitch.on;
@@ -1191,6 +1241,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
     UIView *otherCard = [self sectionCardWithTitle:@"أخرى" y:436 height:94];
     [otherCard addSubview:[self sectionButtonWithTitle:@"صفحة المطور" y:44 action:@selector(developerPressed)]];
     [self.view addSubview:otherCard];
+}
+
+- (void)viewDidAppear:(BOOL)animated {
+    [super viewDidAppear:animated];
+    TOTranslateControllerTree(self);
 }
 
 - (void)closePressed { [self dismissViewControllerAnimated:YES completion:nil]; }
@@ -1378,7 +1433,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [[TOTranslationManager shared] saveSettings];
     }]];
 
-    [top presentViewController:alert animated:YES completion:nil];
+    [top presentViewController:alert animated:YES completion:^{
+        TOTranslateControllerTree(alert);
+    }];
 }
 
 - (NSArray<NSDictionary *> *)colorStops {
@@ -1513,7 +1570,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
     for (NSDictionary *item in langs) {
         NSString *code = item[@"code"];
-        NSString *name = item[@"name"];
+        NSString *name = TODisplayLanguageName(code, m.targetLanguage, item[@"name"]);
         if (!isSource && [code isEqualToString:@"auto"]) continue;
 
         NSString *current = isSource ? m.sourceLanguage : m.targetLanguage;
@@ -1527,7 +1584,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
     [picker addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
     [self configurePopover:picker];
-    [top presentViewController:picker animated:YES completion:nil];
+    [top presentViewController:picker animated:YES completion:^{
+        TOTranslateControllerTree(picker);
+    }];
 }
 
 - (void)showOCRTextSizePicker {
@@ -1587,7 +1646,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
         [textSheet addAction:[UIAlertAction actionWithTitle:@"رجوع" style:UIAlertActionStyleCancel handler:nil]];
         [self configurePopover:textSheet];
-        [menuTop presentViewController:textSheet animated:YES completion:nil];
+        [menuTop presentViewController:textSheet animated:YES completion:^{
+            TOTranslateControllerTree(textSheet);
+        }];
     }]];
 
     [sheet addAction:[UIAlertAction actionWithTitle:@"إعدادات لون الخلفية ▸" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -1638,12 +1699,16 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
         [bgSheet addAction:[UIAlertAction actionWithTitle:@"رجوع" style:UIAlertActionStyleCancel handler:nil]];
         [self configurePopover:bgSheet];
-        [menuTop presentViewController:bgSheet animated:YES completion:nil];
+        [menuTop presentViewController:bgSheet animated:YES completion:^{
+            TOTranslateControllerTree(bgSheet);
+        }];
     }]];
 
     [sheet addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
     [self configurePopover:sheet];
-    [top presentViewController:sheet animated:YES completion:nil];
+    [top presentViewController:sheet animated:YES completion:^{
+        TOTranslateControllerTree(sheet);
+    }];
 }
 
 - (void)openDeveloperPage {
@@ -1703,7 +1768,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [langSheet addAction:[UIAlertAction actionWithTitle:@"اختيار لغة الهدف" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showLanguagePicker:NO]; }]];
         [langSheet addAction:[UIAlertAction actionWithTitle:@"رجوع" style:UIAlertActionStyleCancel handler:nil]];
         [self configurePopover:langSheet];
-        [menuTop presentViewController:langSheet animated:YES completion:nil];
+        [menuTop presentViewController:langSheet animated:YES completion:^{
+            TOTranslateControllerTree(langSheet);
+        }];
     }]];
 
     [sheet addAction:[UIAlertAction actionWithTitle:@"إعدادات الترجمة ▸" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -1717,7 +1784,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [ocrSheet addAction:[UIAlertAction actionWithTitle:@"تغيير حجم نص OCR" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRTextSizePicker]; }]];
         [ocrSheet addAction:[UIAlertAction actionWithTitle:@"رجوع" style:UIAlertActionStyleCancel handler:nil]];
         [self configurePopover:ocrSheet];
-        [menuTop presentViewController:ocrSheet animated:YES completion:nil];
+        [menuTop presentViewController:ocrSheet animated:YES completion:^{
+            TOTranslateControllerTree(ocrSheet);
+        }];
     }]];
 
     [sheet addAction:[UIAlertAction actionWithTitle:@"صفحة المطور" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
@@ -1726,7 +1795,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
     [sheet addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
     [self configurePopover:sheet];
-    [top presentViewController:sheet animated:YES completion:nil];
+    [top presentViewController:sheet animated:YES completion:^{
+        TOTranslateControllerTree(sheet);
+    }];
 }
 
 - (void)singleTap { [self translateCurrentPage]; }
