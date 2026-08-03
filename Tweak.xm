@@ -86,6 +86,13 @@ static BOOL TOGetRGBComponents(UIColor *color, CGFloat *r, CGFloat *g, CGFloat *
     return NO;
 }
 
+static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, CGFloat g2, CGFloat b2) {
+    CGFloat dr = r1 - r2;
+    CGFloat dg = g1 - g2;
+    CGFloat db = b1 - b2;
+    return sqrt((dr * dr) + (dg * dg) + (db * db));
+}
+
 @interface TOTranslationManager : NSObject
 @property (nonatomic, copy) NSString *sourceLanguage;
 @property (nonatomic, copy) NSString *targetLanguage;
@@ -457,7 +464,7 @@ static void TOTranslateViewTree(UIView *view) {
 - (UIColor *)detectedBackgroundColorInImage:(UIImage *)image rect:(CGRect)rect textColor:(UIColor *)textColor {
     if (!image.CGImage || CGRectIsEmpty(rect)) return nil;
 
-    CGRect expanded = CGRectInset(rect, -6.0, -3.0);
+    CGRect expanded = CGRectInset(rect, -10.0, -6.0);
     CGRect safe = CGRectIntersection(expanded, CGRectMake(0, 0, image.size.width, image.size.height));
     if (CGRectIsEmpty(safe) || safe.size.width < 2 || safe.size.height < 2) return nil;
 
@@ -467,8 +474,8 @@ static void TOTranslateViewTree(UIView *view) {
     CGImageRef cropped = CGImageCreateWithImageInRect(image.CGImage, pxRect);
     if (!cropped) return nil;
 
-    const size_t w = 28;
-    const size_t h = 28;
+    const size_t w = 40;
+    const size_t h = 40;
     const size_t bpp = 4;
     const size_t bpr = w * bpp;
 
@@ -493,10 +500,34 @@ static void TOTranslateViewTree(UIView *view) {
     CGFloat tr = 0, tg = 0, tb = 0;
     BOOL hasTextColor = TOGetRGBComponents(textColor, &tr, &tg, &tb);
 
-    CGFloat sumR = 0;
-    CGFloat sumG = 0;
-    CGFloat sumB = 0;
-    CGFloat sumW = 0;
+    CGFloat safeW = MAX(CGRectGetWidth(safe), 1.0);
+    CGFloat safeH = MAX(CGRectGetHeight(safe), 1.0);
+    NSInteger innerMinX = (NSInteger)floor(((CGRectGetMinX(rect) - CGRectGetMinX(safe)) / safeW) * (CGFloat)w);
+    NSInteger innerMaxX = (NSInteger)ceil(((CGRectGetMaxX(rect) - CGRectGetMinX(safe)) / safeW) * (CGFloat)w);
+    NSInteger innerMinY = (NSInteger)floor(((CGRectGetMinY(rect) - CGRectGetMinY(safe)) / safeH) * (CGFloat)h);
+    NSInteger innerMaxY = (NSInteger)ceil(((CGRectGetMaxY(rect) - CGRectGetMinY(safe)) / safeH) * (CGFloat)h);
+    innerMinX = MAX(0, MIN((NSInteger)w - 1, innerMinX));
+    innerMaxX = MAX(0, MIN((NSInteger)w, innerMaxX));
+    innerMinY = MAX(0, MIN((NSInteger)h - 1, innerMinY));
+    innerMaxY = MAX(0, MIN((NSInteger)h, innerMaxY));
+
+    static const NSInteger kBinsPerChannel = 16;
+    static const NSInteger kTotalBins = kBinsPerChannel * kBinsPerChannel * kBinsPerChannel;
+    CGFloat binWeight[kTotalBins];
+    CGFloat binRingWeight[kTotalBins];
+    CGFloat binSumR[kTotalBins];
+    CGFloat binSumG[kTotalBins];
+    CGFloat binSumB[kTotalBins];
+    memset(binWeight, 0, sizeof(binWeight));
+    memset(binRingWeight, 0, sizeof(binRingWeight));
+    memset(binSumR, 0, sizeof(binSumR));
+    memset(binSumG, 0, sizeof(binSumG));
+    memset(binSumB, 0, sizeof(binSumB));
+
+    CGFloat fallbackR = 0;
+    CGFloat fallbackG = 0;
+    CGFloat fallbackB = 0;
+    CGFloat fallbackW = 0;
 
     for (size_t y = 0; y < h; y++) {
         for (size_t x = 0; x < w; x++) {
@@ -507,22 +538,73 @@ static void TOTranslateViewTree(UIView *view) {
             CGFloat a = buf[idx + 3] / 255.0;
             if (a < 0.15) continue;
 
+            BOOL insideTextRect = ((NSInteger)x >= innerMinX && (NSInteger)x < innerMaxX && (NSInteger)y >= innerMinY && (NSInteger)y < innerMaxY);
             CGFloat maxC = MAX(r, MAX(g, b));
             CGFloat minC = MIN(r, MIN(g, b));
             CGFloat sat = (maxC <= 0.0001) ? 0.0 : ((maxC - minC) / maxC);
+            CGFloat brightness = maxC;
 
             if (hasTextColor) {
-                CGFloat dist = fabs(r - tr) + fabs(g - tg) + fabs(b - tb);
-                if (dist < 0.20 && sat > 0.20) continue;
+                CGFloat dist = TOColorDistance(r, g, b, tr, tg, tb);
+                if (insideTextRect && dist < 0.22) continue;
+                if (!insideTextRect && dist < 0.08 && sat > 0.22) continue;
             }
 
-            CGFloat weight = a * (1.15 - MIN(sat, 1.0));
+            if (brightness < 0.02) continue;
+
+            CGFloat baseWeight = insideTextRect ? 0.42 : 1.35;
+            CGFloat neutralBoost = 1.0 + (1.0 - MIN(sat, 1.0)) * 0.55;
+            CGFloat weight = a * baseWeight * neutralBoost;
             if (weight <= 0.01) continue;
 
-            sumR += r * weight;
-            sumG += g * weight;
-            sumB += b * weight;
-            sumW += weight;
+            NSInteger ri = (NSInteger)lround(r * (kBinsPerChannel - 1));
+            NSInteger gi = (NSInteger)lround(g * (kBinsPerChannel - 1));
+            NSInteger bi = (NSInteger)lround(b * (kBinsPerChannel - 1));
+            ri = MAX(0, MIN(kBinsPerChannel - 1, ri));
+            gi = MAX(0, MIN(kBinsPerChannel - 1, gi));
+            bi = MAX(0, MIN(kBinsPerChannel - 1, bi));
+            NSInteger bin = (ri << 8) | (gi << 4) | bi;
+
+            binWeight[bin] += weight;
+            if (!insideTextRect) binRingWeight[bin] += weight;
+            binSumR[bin] += r * weight;
+            binSumG[bin] += g * weight;
+            binSumB[bin] += b * weight;
+
+            fallbackR += r * weight;
+            fallbackG += g * weight;
+            fallbackB += b * weight;
+            fallbackW += weight;
+        }
+    }
+
+    NSInteger bestBin = -1;
+    NSInteger secondBin = -1;
+    CGFloat bestScore = 0;
+    CGFloat secondScore = 0;
+
+    for (NSInteger i = 0; i < kTotalBins; i++) {
+        CGFloat score = binWeight[i] + (binRingWeight[i] * 0.65);
+        if (score > bestScore) {
+            secondScore = bestScore;
+            secondBin = bestBin;
+            bestScore = score;
+            bestBin = i;
+        } else if (score > secondScore) {
+            secondScore = score;
+            secondBin = i;
+        }
+    }
+
+    NSInteger chosenBin = bestBin;
+    if (hasTextColor && bestBin >= 0 && secondBin >= 0) {
+        CGFloat bestW = MAX(binWeight[bestBin], 0.0001);
+        CGFloat bestR = binSumR[bestBin] / bestW;
+        CGFloat bestG = binSumG[bestBin] / bestW;
+        CGFloat bestB = binSumB[bestBin] / bestW;
+        CGFloat textDist = TOColorDistance(bestR, bestG, bestB, tr, tg, tb);
+        if (textDist < 0.18 && secondScore > (bestScore * 0.42)) {
+            chosenBin = secondBin;
         }
     }
 
@@ -530,8 +612,139 @@ static void TOTranslateViewTree(UIView *view) {
     free(buf);
     CGImageRelease(cropped);
 
-    if (sumW < 0.01) return nil;
-    return [UIColor colorWithRed:(sumR / sumW) green:(sumG / sumW) blue:(sumB / sumW) alpha:1.0];
+    if (chosenBin >= 0 && binWeight[chosenBin] > 0.01) {
+        CGFloat wSum = binWeight[chosenBin];
+        return [UIColor colorWithRed:(binSumR[chosenBin] / wSum)
+                               green:(binSumG[chosenBin] / wSum)
+                                blue:(binSumB[chosenBin] / wSum)
+                               alpha:1.0];
+    }
+
+    if (fallbackW < 0.01) return nil;
+    return [UIColor colorWithRed:(fallbackR / fallbackW)
+                           green:(fallbackG / fallbackW)
+                            blue:(fallbackB / fallbackW)
+                           alpha:1.0];
+}
+
+static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(void) {
+    static NSArray<NSDictionary<NSString *, NSString *> *> *langs;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        langs = @[
+            @{@"code": @"auto", @"name": @"اكتشاف تلقائي"},
+            @{@"code": @"af", @"name": @"Afrikaans"},
+            @{@"code": @"sq", @"name": @"Albanian"},
+            @{@"code": @"am", @"name": @"Amharic"},
+            @{@"code": @"ar", @"name": @"العربية"},
+            @{@"code": @"hy", @"name": @"Armenian"},
+            @{@"code": @"az", @"name": @"Azerbaijani"},
+            @{@"code": @"eu", @"name": @"Basque"},
+            @{@"code": @"be", @"name": @"Belarusian"},
+            @{@"code": @"bn", @"name": @"Bengali"},
+            @{@"code": @"bs", @"name": @"Bosnian"},
+            @{@"code": @"bg", @"name": @"Bulgarian"},
+            @{@"code": @"ca", @"name": @"Catalan"},
+            @{@"code": @"ceb", @"name": @"Cebuano"},
+            @{@"code": @"ny", @"name": @"Chichewa"},
+            @{@"code": @"zh-CN", @"name": @"Chinese (Simplified)"},
+            @{@"code": @"zh-TW", @"name": @"Chinese (Traditional)"},
+            @{@"code": @"co", @"name": @"Corsican"},
+            @{@"code": @"hr", @"name": @"Croatian"},
+            @{@"code": @"cs", @"name": @"Czech"},
+            @{@"code": @"da", @"name": @"Danish"},
+            @{@"code": @"nl", @"name": @"Dutch"},
+            @{@"code": @"en", @"name": @"English"},
+            @{@"code": @"eo", @"name": @"Esperanto"},
+            @{@"code": @"et", @"name": @"Estonian"},
+            @{@"code": @"tl", @"name": @"Filipino"},
+            @{@"code": @"fi", @"name": @"Finnish"},
+            @{@"code": @"fr", @"name": @"French"},
+            @{@"code": @"fy", @"name": @"Frisian"},
+            @{@"code": @"gl", @"name": @"Galician"},
+            @{@"code": @"ka", @"name": @"Georgian"},
+            @{@"code": @"de", @"name": @"German"},
+            @{@"code": @"el", @"name": @"Greek"},
+            @{@"code": @"gu", @"name": @"Gujarati"},
+            @{@"code": @"ht", @"name": @"Haitian Creole"},
+            @{@"code": @"ha", @"name": @"Hausa"},
+            @{@"code": @"haw", @"name": @"Hawaiian"},
+            @{@"code": @"he", @"name": @"Hebrew"},
+            @{@"code": @"hi", @"name": @"Hindi"},
+            @{@"code": @"hmn", @"name": @"Hmong"},
+            @{@"code": @"hu", @"name": @"Hungarian"},
+            @{@"code": @"is", @"name": @"Icelandic"},
+            @{@"code": @"ig", @"name": @"Igbo"},
+            @{@"code": @"id", @"name": @"Indonesian"},
+            @{@"code": @"ga", @"name": @"Irish"},
+            @{@"code": @"it", @"name": @"Italian"},
+            @{@"code": @"ja", @"name": @"Japanese"},
+            @{@"code": @"jw", @"name": @"Javanese"},
+            @{@"code": @"kn", @"name": @"Kannada"},
+            @{@"code": @"kk", @"name": @"Kazakh"},
+            @{@"code": @"km", @"name": @"Khmer"},
+            @{@"code": @"rw", @"name": @"Kinyarwanda"},
+            @{@"code": @"ko", @"name": @"Korean"},
+            @{@"code": @"ku", @"name": @"Kurdish (Kurmanji)"},
+            @{@"code": @"ky", @"name": @"Kyrgyz"},
+            @{@"code": @"lo", @"name": @"Lao"},
+            @{@"code": @"la", @"name": @"Latin"},
+            @{@"code": @"lv", @"name": @"Latvian"},
+            @{@"code": @"lt", @"name": @"Lithuanian"},
+            @{@"code": @"lb", @"name": @"Luxembourgish"},
+            @{@"code": @"mk", @"name": @"Macedonian"},
+            @{@"code": @"mg", @"name": @"Malagasy"},
+            @{@"code": @"ms", @"name": @"Malay"},
+            @{@"code": @"ml", @"name": @"Malayalam"},
+            @{@"code": @"mt", @"name": @"Maltese"},
+            @{@"code": @"mi", @"name": @"Maori"},
+            @{@"code": @"mr", @"name": @"Marathi"},
+            @{@"code": @"mn", @"name": @"Mongolian"},
+            @{@"code": @"my", @"name": @"Myanmar (Burmese)"},
+            @{@"code": @"ne", @"name": @"Nepali"},
+            @{@"code": @"no", @"name": @"Norwegian"},
+            @{@"code": @"or", @"name": @"Odia"},
+            @{@"code": @"ps", @"name": @"Pashto"},
+            @{@"code": @"fa", @"name": @"Persian"},
+            @{@"code": @"pl", @"name": @"Polish"},
+            @{@"code": @"pt", @"name": @"Portuguese"},
+            @{@"code": @"pa", @"name": @"Punjabi"},
+            @{@"code": @"ro", @"name": @"Romanian"},
+            @{@"code": @"ru", @"name": @"الروسية"},
+            @{@"code": @"sm", @"name": @"Samoan"},
+            @{@"code": @"gd", @"name": @"Scots Gaelic"},
+            @{@"code": @"sr", @"name": @"Serbian"},
+            @{@"code": @"st", @"name": @"Sesotho"},
+            @{@"code": @"sn", @"name": @"Shona"},
+            @{@"code": @"sd", @"name": @"Sindhi"},
+            @{@"code": @"si", @"name": @"Sinhala"},
+            @{@"code": @"sk", @"name": @"Slovak"},
+            @{@"code": @"sl", @"name": @"Slovenian"},
+            @{@"code": @"so", @"name": @"Somali"},
+            @{@"code": @"es", @"name": @"Spanish"},
+            @{@"code": @"su", @"name": @"Sundanese"},
+            @{@"code": @"sw", @"name": @"Swahili"},
+            @{@"code": @"sv", @"name": @"Swedish"},
+            @{@"code": @"tg", @"name": @"Tajik"},
+            @{@"code": @"ta", @"name": @"Tamil"},
+            @{@"code": @"tt", @"name": @"Tatar"},
+            @{@"code": @"te", @"name": @"Telugu"},
+            @{@"code": @"th", @"name": @"Thai"},
+            @{@"code": @"tr", @"name": @"التركية"},
+            @{@"code": @"tk", @"name": @"Turkmen"},
+            @{@"code": @"uk", @"name": @"Ukrainian"},
+            @{@"code": @"ur", @"name": @"Urdu"},
+            @{@"code": @"ug", @"name": @"Uyghur"},
+            @{@"code": @"uz", @"name": @"Uzbek"},
+            @{@"code": @"vi", @"name": @"Vietnamese"},
+            @{@"code": @"cy", @"name": @"Welsh"},
+            @{@"code": @"xh", @"name": @"Xhosa"},
+            @{@"code": @"yi", @"name": @"Yiddish"},
+            @{@"code": @"yo", @"name": @"Yoruba"},
+            @{@"code": @"zu", @"name": @"Zulu"}
+        ];
+    });
+    return langs;
 }
 
 - (UIImage *)renderTranslatedTextOnImage:(UIImage *)image items:(NSArray<NSDictionary *> *)items {
@@ -1296,17 +1509,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     TOTranslationManager *m = TOTranslationManager.shared;
     UIAlertController *picker = [UIAlertController alertControllerWithTitle:(isSource ? @"اختر لغة المصدر" : @"اختر لغة الهدف") message:@"يمكنك تغيير اللغة في أي وقت" preferredStyle:UIAlertControllerStyleActionSheet];
 
-    NSArray<NSDictionary<NSString *, NSString *> *> *langs = @[
-        @{@"code": @"auto", @"name": @"اكتشاف تلقائي"},
-        @{@"code": @"ar", @"name": @"العربية"},
-        @{@"code": @"en", @"name": @"الإنجليزية"},
-        @{@"code": @"fr", @"name": @"الفرنسية"},
-        @{@"code": @"tr", @"name": @"التركية"},
-        @{@"code": @"es", @"name": @"الإسبانية"},
-        @{@"code": @"de", @"name": @"الألمانية"},
-        @{@"code": @"it", @"name": @"الإيطالية"},
-        @{@"code": @"ru", @"name": @"الروسية"}
-    ];
+    NSArray<NSDictionary<NSString *, NSString *> *> *langs = TOSupportedLanguages();
 
     for (NSDictionary *item in langs) {
         NSString *code = item[@"code"];
