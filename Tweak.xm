@@ -585,8 +585,6 @@ static void TOTranslateViewTree(UIView *view) {
 - (void)showOCRTextSizePicker;
 - (void)showLanguagePicker:(BOOL)isSource;
 - (void)openDeveloperPage;
-- (void)showTextColorPresets;
-- (void)showBackgroundColorPresets;
 - (NSArray<NSDictionary *> *)colorStops;
 - (NSDictionary *)colorStopForNormalized:(CGFloat)normalized;
 - (CGFloat)normalizedValueForHue:(CGFloat)h saturation:(CGFloat)s brightness:(CGFloat)b;
@@ -1156,83 +1154,6 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     [m saveSettings];
 }
 
-- (void)showTextColorPresets {
-    UIViewController *top = TOTopViewController();
-    if (!top) return;
-    TOTranslationManager *m = TOTranslationManager.shared;
-
-    NSArray<NSDictionary *> *presets = @[
-        @{@"name": @"أبيض", @"h": @0.0, @"s": @0.0, @"b": @1.0},
-        @{@"name": @"أسود", @"h": @0.0, @"s": @0.0, @"b": @0.0},
-        @{@"name": @"أحمر", @"h": @0.0, @"s": @0.85, @"b": @1.0},
-        @{@"name": @"برتقالي", @"h": @0.08, @"s": @0.85, @"b": @1.0},
-        @{@"name": @"أصفر", @"h": @0.14, @"s": @0.85, @"b": @1.0},
-        @{@"name": @"ليموني", @"h": @0.20, @"s": @0.70, @"b": @1.0},
-        @{@"name": @"أخضر", @"h": @0.33, @"s": @0.75, @"b": @1.0},
-        @{@"name": @"فيروزي", @"h": @0.45, @"s": @0.75, @"b": @1.0},
-        @{@"name": @"سماوي", @"h": @0.52, @"s": @0.70, @"b": @1.0},
-        @{@"name": @"أزرق", @"h": @0.62, @"s": @0.75, @"b": @1.0},
-        @{@"name": @"نيلي", @"h": @0.70, @"s": @0.70, @"b": @1.0},
-        @{@"name": @"بنفسجي", @"h": @0.78, @"s": @0.70, @"b": @1.0},
-        @{@"name": @"وردي", @"h": @0.90, @"s": @0.55, @"b": @1.0}
-    ];
-
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"ألوان النص الجاهزة"
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    for (NSDictionary *item in presets) {
-        NSString *name = item[@"name"];
-        [sheet addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            m.ocrManualHue = [item[@"h"] doubleValue];
-            m.ocrManualSaturation = [item[@"s"] doubleValue];
-            m.ocrManualBrightness = [item[@"b"] doubleValue];
-            [m saveSettings];
-            [self showToast:[NSString stringWithFormat:@"لون النص: %@", name]];
-        }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
-    [self configurePopover:sheet];
-    [top presentViewController:sheet animated:YES completion:nil];
-}
-
-- (void)showBackgroundColorPresets {
-    UIViewController *top = TOTopViewController();
-    if (!top) return;
-    TOTranslationManager *m = TOTranslationManager.shared;
-
-    NSArray<NSDictionary *> *presets = @[
-        @{@"name": @"أبيض", @"h": @0.0, @"s": @0.0, @"b": @1.0},
-        @{@"name": @"أسود", @"h": @0.0, @"s": @0.0, @"b": @0.0},
-        @{@"name": @"رمادي داكن", @"h": @0.0, @"s": @0.0, @"b": @0.20},
-        @{@"name": @"رمادي", @"h": @0.0, @"s": @0.0, @"b": @0.45},
-        @{@"name": @"أحمر", @"h": @0.0, @"s": @0.75, @"b": @0.35},
-        @{@"name": @"برتقالي", @"h": @0.08, @"s": @0.80, @"b": @0.35},
-        @{@"name": @"أصفر", @"h": @0.14, @"s": @0.80, @"b": @0.36},
-        @{@"name": @"أخضر", @"h": @0.33, @"s": @0.70, @"b": @0.34},
-        @{@"name": @"سماوي", @"h": @0.52, @"s": @0.70, @"b": @0.34},
-        @{@"name": @"أزرق", @"h": @0.62, @"s": @0.70, @"b": @0.34},
-        @{@"name": @"بنفسجي", @"h": @0.78, @"s": @0.70, @"b": @0.34},
-        @{@"name": @"وردي", @"h": @0.90, @"s": @0.55, @"b": @0.35}
-    ];
-
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"ألوان الخلفية الجاهزة"
-                                                                   message:nil
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-    for (NSDictionary *item in presets) {
-        NSString *name = item[@"name"];
-        [sheet addAction:[UIAlertAction actionWithTitle:name style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            m.ocrBackgroundHue = [item[@"h"] doubleValue];
-            m.ocrBackgroundSaturation = [item[@"s"] doubleValue];
-            m.ocrBackgroundBrightness = [item[@"b"] doubleValue];
-            [m saveSettings];
-            [self showToast:[NSString stringWithFormat:@"لون الخلفية: %@", name]];
-        }]];
-    }
-    [sheet addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
-    [self configurePopover:sheet];
-    [top presentViewController:sheet animated:YES completion:nil];
-}
-
 - (void)showLanguagePicker:(BOOL)isSource {
     UIViewController *top = TOTopViewController();
     if (!top) return;
@@ -1297,10 +1218,6 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [self showToast:(m.ocrAutoColorEnabled ? @"تم تفعيل اللون التلقائي" : @"تم تعطيل اللون التلقائي")];
     }]];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"ألوان النص الجاهزة" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        [self showTextColorPresets];
-    }]];
-
     [sheet addAction:[UIAlertAction actionWithTitle:@"لون النص: الدرجة اللونية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         [self presentSliderPopupWithTitle:@"لون النص - الدرجة اللونية"
                                      mode:TOOverlaySliderModeTextHue
@@ -1329,10 +1246,6 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                             currentValue:[self normalizedValueForHue:m.ocrBackgroundHue saturation:m.ocrBackgroundSaturation brightness:m.ocrBackgroundBrightness]
                             showsPreview:YES
                        showsSizePreview:NO];
-    }]];
-
-    [sheet addAction:[UIAlertAction actionWithTitle:@"ألوان الخلفية الجاهزة" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        [self showBackgroundColorPresets];
     }]];
 
     [sheet addAction:[UIAlertAction actionWithTitle:@"لون الخلفية: التشبع" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
