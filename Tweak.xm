@@ -1341,74 +1341,101 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 - (void)showOCRAppearanceSettings {
     UIViewController *top = TOTopViewController();
     if (!top) return;
-    TOTranslationManager *m = TOTranslationManager.shared;
 
-    NSString *autoColorTitle = m.ocrAutoColorEnabled ? @"تعطيل اللون التلقائي للنص" : @"تفعيل اللون التلقائي للنص";
-    NSString *autoBackgroundTitle = m.ocrBackgroundAutoColorEnabled ? @"تعطيل اللون التلقائي لخلفية النص" : @"تفعيل اللون التلقائي لخلفية النص";
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"إعدادات مظهر OCR"
                                                                    message:@"تخصيص لون النص والخلفية"
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:autoColorTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        m.ocrAutoColorEnabled = !m.ocrAutoColorEnabled;
-        [m saveSettings];
-        [self showToast:(m.ocrAutoColorEnabled ? @"تم تفعيل اللون التلقائي" : @"تم تعطيل اللون التلقائي")];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"إعدادات لون النص ▸" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        UIViewController *menuTop = TOTopViewController();
+        if (!menuTop) return;
+
+        TOTranslationManager *innerM = TOTranslationManager.shared;
+        NSString *innerAutoColorTitle = innerM.ocrAutoColorEnabled ? @"تعطيل اللون التلقائي للنص" : @"تفعيل اللون التلقائي للنص";
+        UIAlertController *textSheet = [UIAlertController alertControllerWithTitle:@"إعدادات لون النص"
+                                                                            message:nil
+                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
+
+        [textSheet addAction:[UIAlertAction actionWithTitle:innerAutoColorTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            innerM.ocrAutoColorEnabled = !innerM.ocrAutoColorEnabled;
+            [innerM saveSettings];
+            [self showToast:(innerM.ocrAutoColorEnabled ? @"تم تفعيل اللون التلقائي" : @"تم تعطيل اللون التلقائي")];
+        }]];
+
+        [textSheet addAction:[UIAlertAction actionWithTitle:@"لون النص: الدرجة اللونية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [self presentSliderPopupWithTitle:@"لون النص - الدرجة اللونية"
+                                         mode:TOOverlaySliderModeTextHue
+                                    minValue:0
+                                    maxValue:1
+                                currentValue:[self normalizedValueForHue:innerM.ocrManualHue saturation:innerM.ocrManualSaturation brightness:innerM.ocrManualBrightness]
+                                showsPreview:YES
+                           showsSizePreview:NO];
+        }]];
+
+        [textSheet addAction:[UIAlertAction actionWithTitle:@"لون النص: التشبع" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [self presentSliderPopupWithTitle:@"لون النص - التشبع"
+                                         mode:TOOverlaySliderModeTextSaturation
+                                    minValue:0
+                                    maxValue:1
+                                currentValue:innerM.ocrManualSaturation
+                                showsPreview:YES
+                           showsSizePreview:NO];
+        }]];
+
+        [textSheet addAction:[UIAlertAction actionWithTitle:@"رجوع" style:UIAlertActionStyleCancel handler:nil]];
+        [self configurePopover:textSheet];
+        [menuTop presentViewController:textSheet animated:YES completion:nil];
     }]];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:autoBackgroundTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        m.ocrBackgroundAutoColorEnabled = !m.ocrBackgroundAutoColorEnabled;
-        [m saveSettings];
-        [self showToast:(m.ocrBackgroundAutoColorEnabled ? @"تم تفعيل اللون التلقائي لخلفية النص" : @"تم تعطيل اللون التلقائي لخلفية النص")];
-    }]];
+    [sheet addAction:[UIAlertAction actionWithTitle:@"إعدادات لون الخلفية ▸" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        UIViewController *menuTop = TOTopViewController();
+        if (!menuTop) return;
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"لون النص: الدرجة اللونية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        [self presentSliderPopupWithTitle:@"لون النص - الدرجة اللونية"
-                                     mode:TOOverlaySliderModeTextHue
-                                minValue:0
-                                maxValue:1
-                            currentValue:[self normalizedValueForHue:m.ocrManualHue saturation:m.ocrManualSaturation brightness:m.ocrManualBrightness]
-                            showsPreview:YES
-                       showsSizePreview:NO];
-    }]];
+        TOTranslationManager *innerM = TOTranslationManager.shared;
+        NSString *innerAutoBackgroundTitle = innerM.ocrBackgroundAutoColorEnabled ? @"تعطيل اللون التلقائي لخلفية النص" : @"تفعيل اللون التلقائي لخلفية النص";
+        UIAlertController *bgSheet = [UIAlertController alertControllerWithTitle:@"إعدادات لون الخلفية"
+                                                                          message:nil
+                                                                   preferredStyle:UIAlertControllerStyleActionSheet];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"لون النص: التشبع" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        [self presentSliderPopupWithTitle:@"لون النص - التشبع"
-                                     mode:TOOverlaySliderModeTextSaturation
-                                minValue:0
-                                maxValue:1
-                            currentValue:m.ocrManualSaturation
-                            showsPreview:YES
-                       showsSizePreview:NO];
-    }]];
+        [bgSheet addAction:[UIAlertAction actionWithTitle:innerAutoBackgroundTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            innerM.ocrBackgroundAutoColorEnabled = !innerM.ocrBackgroundAutoColorEnabled;
+            [innerM saveSettings];
+            [self showToast:(innerM.ocrBackgroundAutoColorEnabled ? @"تم تفعيل اللون التلقائي لخلفية النص" : @"تم تعطيل اللون التلقائي لخلفية النص")];
+        }]];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"لون الخلفية: الدرجة اللونية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        [self presentSliderPopupWithTitle:@"لون الخلفية - الدرجة اللونية"
-                                     mode:TOOverlaySliderModeBackgroundHue
-                                minValue:0
-                                maxValue:1
-                            currentValue:[self normalizedValueForHue:m.ocrBackgroundHue saturation:m.ocrBackgroundSaturation brightness:m.ocrBackgroundBrightness]
-                            showsPreview:YES
-                       showsSizePreview:NO];
-    }]];
+        [bgSheet addAction:[UIAlertAction actionWithTitle:@"لون الخلفية: الدرجة اللونية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [self presentSliderPopupWithTitle:@"لون الخلفية - الدرجة اللونية"
+                                         mode:TOOverlaySliderModeBackgroundHue
+                                    minValue:0
+                                    maxValue:1
+                                currentValue:[self normalizedValueForHue:innerM.ocrBackgroundHue saturation:innerM.ocrBackgroundSaturation brightness:innerM.ocrBackgroundBrightness]
+                                showsPreview:YES
+                           showsSizePreview:NO];
+        }]];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"لون الخلفية: التشبع" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        [self presentSliderPopupWithTitle:@"لون الخلفية - التشبع"
-                                     mode:TOOverlaySliderModeBackgroundSaturation
-                                minValue:0
-                                maxValue:1
-                            currentValue:m.ocrBackgroundSaturation
-                            showsPreview:YES
-                       showsSizePreview:NO];
-    }]];
+        [bgSheet addAction:[UIAlertAction actionWithTitle:@"لون الخلفية: التشبع" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [self presentSliderPopupWithTitle:@"لون الخلفية - التشبع"
+                                         mode:TOOverlaySliderModeBackgroundSaturation
+                                    minValue:0
+                                    maxValue:1
+                                currentValue:innerM.ocrBackgroundSaturation
+                                showsPreview:YES
+                           showsSizePreview:NO];
+        }]];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"تعتيم الخلفية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        [self presentSliderPopupWithTitle:@"تعتيم خلفية النص"
-                                     mode:TOOverlaySliderModeBackgroundAlpha
-                                minValue:0
-                                maxValue:1
-                            currentValue:m.ocrBackgroundAlpha
-                            showsPreview:YES
-                       showsSizePreview:NO];
+        [bgSheet addAction:[UIAlertAction actionWithTitle:@"تعتيم الخلفية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [self presentSliderPopupWithTitle:@"تعتيم خلفية النص"
+                                         mode:TOOverlaySliderModeBackgroundAlpha
+                                    minValue:0
+                                    maxValue:1
+                                currentValue:innerM.ocrBackgroundAlpha
+                                showsPreview:YES
+                           showsSizePreview:NO];
+        }]];
+
+        [bgSheet addAction:[UIAlertAction actionWithTitle:@"رجوع" style:UIAlertActionStyleCancel handler:nil]];
+        [self configurePopover:bgSheet];
+        [menuTop presentViewController:bgSheet animated:YES completion:nil];
     }]];
 
     [sheet addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
