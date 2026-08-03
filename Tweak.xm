@@ -19,6 +19,8 @@ static NSString * const kTOOCRTextAutoColorEnabledKey = @"to_ocr_text_auto_color
 static NSString * const kTOOCRManualHueKey = @"to_ocr_manual_hue";
 static NSString * const kTOOCRManualSaturationKey = @"to_ocr_manual_saturation";
 static NSString * const kTOOCRBackgroundAlphaKey = @"to_ocr_background_alpha";
+static NSString * const kTOOCRBackgroundHueKey = @"to_ocr_background_hue";
+static NSString * const kTOOCRBackgroundSaturationKey = @"to_ocr_background_saturation";
 
 static BOOL TOShouldTranslateText(NSString *text) {
     if (text.length == 0) return NO;
@@ -70,11 +72,14 @@ static UIViewController *TOTopViewController(void) {
 @property (nonatomic, assign) CGFloat ocrManualHue;
 @property (nonatomic, assign) CGFloat ocrManualSaturation;
 @property (nonatomic, assign) CGFloat ocrBackgroundAlpha;
+@property (nonatomic, assign) CGFloat ocrBackgroundHue;
+@property (nonatomic, assign) CGFloat ocrBackgroundSaturation;
 
 + (instancetype)shared;
 - (void)loadSettings;
 - (void)saveSettings;
 - (UIColor *)ocrManualUIColor;
+- (UIColor *)ocrBackgroundUIColor;
 - (void)translateText:(NSString *)text completion:(void (^)(NSString *translated))completion;
 @end
 
@@ -116,6 +121,11 @@ static UIViewController *TOTopViewController(void) {
 
     CGFloat bg = [d doubleForKey:kTOOCRBackgroundAlphaKey];
     self.ocrBackgroundAlpha = (bg >= 0.0 && bg <= 1.0) ? bg : 0.65;
+
+    CGFloat bgHue = [d doubleForKey:kTOOCRBackgroundHueKey];
+    CGFloat bgSat = [d doubleForKey:kTOOCRBackgroundSaturationKey];
+    self.ocrBackgroundHue = (bgHue >= 0.0 && bgHue <= 1.0) ? bgHue : 0.0;
+    self.ocrBackgroundSaturation = (bgSat >= 0.0 && bgSat <= 1.0) ? bgSat : 0.0;
 }
 
 - (void)saveSettings {
@@ -129,6 +139,8 @@ static UIViewController *TOTopViewController(void) {
     [d setDouble:MIN(MAX(self.ocrManualHue, 0.0), 1.0) forKey:kTOOCRManualHueKey];
     [d setDouble:MIN(MAX(self.ocrManualSaturation, 0.0), 1.0) forKey:kTOOCRManualSaturationKey];
     [d setDouble:MIN(MAX(self.ocrBackgroundAlpha, 0.0), 1.0) forKey:kTOOCRBackgroundAlphaKey];
+    [d setDouble:MIN(MAX(self.ocrBackgroundHue, 0.0), 1.0) forKey:kTOOCRBackgroundHueKey];
+    [d setDouble:MIN(MAX(self.ocrBackgroundSaturation, 0.0), 1.0) forKey:kTOOCRBackgroundSaturationKey];
     [d synchronize];
 }
 
@@ -136,6 +148,12 @@ static UIViewController *TOTopViewController(void) {
     CGFloat h = MIN(MAX(self.ocrManualHue, 0.0), 1.0);
     CGFloat s = MIN(MAX(self.ocrManualSaturation, 0.0), 1.0);
     return [UIColor colorWithHue:h saturation:s brightness:1.0 alpha:1.0];
+}
+
+- (UIColor *)ocrBackgroundUIColor {
+    CGFloat h = MIN(MAX(self.ocrBackgroundHue, 0.0), 1.0);
+    CGFloat s = MIN(MAX(self.ocrBackgroundSaturation, 0.0), 1.0);
+    return [UIColor colorWithHue:h saturation:s brightness:0.28 alpha:1.0];
 }
 
 - (NSString *)detectedLanguage:(NSString *)text {
@@ -426,7 +444,8 @@ static void TOTranslateViewTree(UIView *view) {
         };
 
         CGRect bgRect = CGRectInset(rect, -2.0, -1.0);
-        [[UIColor colorWithWhite:0 alpha:MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0)] setFill];
+        UIColor *bgColor = [[m ocrBackgroundUIColor] colorWithAlphaComponent:MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0)];
+        [bgColor setFill];
         UIBezierPath *bg = [UIBezierPath bezierPathWithRoundedRect:bgRect cornerRadius:3.0];
         [bg fill];
 
@@ -520,11 +539,20 @@ static void TOTranslateViewTree(UIView *view) {
 @property (nonatomic, strong) UISwitch *autoColorSwitch;
 @property (nonatomic, strong) UISlider *hueSlider;
 @property (nonatomic, strong) UISlider *saturationSlider;
+@property (nonatomic, strong) UISlider *bgHueSlider;
+@property (nonatomic, strong) UISlider *bgSaturationSlider;
 @property (nonatomic, strong) UISlider *bgAlphaSlider;
 @property (nonatomic, strong) UIView *colorPreview;
+@property (nonatomic, strong) UIView *bgColorPreview;
 @property (nonatomic, strong) UILabel *hueValue;
 @property (nonatomic, strong) UILabel *satValue;
+@property (nonatomic, strong) UILabel *bgHueValue;
+@property (nonatomic, strong) UILabel *bgSatValue;
 @property (nonatomic, strong) UILabel *bgValue;
+@end
+
+@interface TOTranslationSettingsViewController : UIViewController
+@property (nonatomic, weak) TOFloatingOverlayController *overlayController;
 @end
 
 @interface TOFloatingOverlayController : NSObject
@@ -536,6 +564,11 @@ static void TOTranslateViewTree(UIView *view) {
 + (instancetype)shared;
 - (void)installIfPossible;
 - (void)showToast:(NSString *)message;
+- (void)startOCR;
+- (void)showOCRAppearanceSettings;
+- (void)showOCRTextSizePicker;
+- (void)showLanguagePicker:(BOOL)isSource;
+- (void)openDeveloperPage;
 @end
 
 @implementation TOOCRAppearanceViewController
@@ -588,7 +621,7 @@ static void TOTranslateViewTree(UIView *view) {
     [close addTarget:self action:@selector(closePressed) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:close];
 
-    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(12, 92, self.view.bounds.size.width - 24, 332)];
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(12, 92, self.view.bounds.size.width - 24, 468)];
     card.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     card.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.06];
     card.layer.cornerRadius = 12;
@@ -613,7 +646,7 @@ static void TOTranslateViewTree(UIView *view) {
     line.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.14];
     [card addSubview:line];
 
-    [card addSubview:[self label:@"الدرجة اللونية" y:62]];
+    [card addSubview:[self label:@"لون النص اليدوي: الدرجة اللونية" y:62]];
     self.hueSlider = [self sliderAtY:84 action:@selector(sliderChanged:)];
     self.hueSlider.minimumValue = 0;
     self.hueSlider.maximumValue = 1;
@@ -622,7 +655,7 @@ static void TOTranslateViewTree(UIView *view) {
     self.hueValue = [self valueLabelAtY:88];
     [card addSubview:self.hueValue];
 
-    [card addSubview:[self label:@"تشبع اللون" y:122]];
+    [card addSubview:[self label:@"لون النص اليدوي: التشبع" y:122]];
     self.saturationSlider = [self sliderAtY:144 action:@selector(sliderChanged:)];
     self.saturationSlider.minimumValue = 0;
     self.saturationSlider.maximumValue = 1;
@@ -631,27 +664,53 @@ static void TOTranslateViewTree(UIView *view) {
     self.satValue = [self valueLabelAtY:148];
     [card addSubview:self.satValue];
 
-    [card addSubview:[self label:@"تعتيم خلفية النص" y:182]];
-    self.bgAlphaSlider = [self sliderAtY:204 action:@selector(sliderChanged:)];
+    [card addSubview:[self label:@"لون خلفية النص: الدرجة اللونية" y:182]];
+    self.bgHueSlider = [self sliderAtY:204 action:@selector(sliderChanged:)];
+    self.bgHueSlider.minimumValue = 0;
+    self.bgHueSlider.maximumValue = 1;
+    self.bgHueSlider.value = m.ocrBackgroundHue;
+    [card addSubview:self.bgHueSlider];
+    self.bgHueValue = [self valueLabelAtY:208];
+    [card addSubview:self.bgHueValue];
+
+    [card addSubview:[self label:@"لون خلفية النص: التشبع" y:242]];
+    self.bgSaturationSlider = [self sliderAtY:264 action:@selector(sliderChanged:)];
+    self.bgSaturationSlider.minimumValue = 0;
+    self.bgSaturationSlider.maximumValue = 1;
+    self.bgSaturationSlider.value = m.ocrBackgroundSaturation;
+    [card addSubview:self.bgSaturationSlider];
+    self.bgSatValue = [self valueLabelAtY:268];
+    [card addSubview:self.bgSatValue];
+
+    [card addSubview:[self label:@"تعتيم خلفية النص" y:302]];
+    self.bgAlphaSlider = [self sliderAtY:324 action:@selector(sliderChanged:)];
     self.bgAlphaSlider.minimumValue = 0;
     self.bgAlphaSlider.maximumValue = 1;
     self.bgAlphaSlider.value = m.ocrBackgroundAlpha;
     [card addSubview:self.bgAlphaSlider];
-    self.bgValue = [self valueLabelAtY:208];
+    self.bgValue = [self valueLabelAtY:328];
     [card addSubview:self.bgValue];
 
-    [card addSubview:[self label:@"أيقونة معاينة اللون" y:248]];
-    self.colorPreview = [[UIView alloc] initWithFrame:CGRectMake(card.bounds.size.width - 56, 246, 28, 28)];
+    [card addSubview:[self label:@"أيقونة معاينة لون النص" y:364]];
+    self.colorPreview = [[UIView alloc] initWithFrame:CGRectMake(card.bounds.size.width - 56, 362, 28, 28)];
     self.colorPreview.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
     self.colorPreview.layer.cornerRadius = 14;
     self.colorPreview.layer.borderWidth = 1;
     self.colorPreview.layer.borderColor = [[UIColor whiteColor] colorWithAlphaComponent:0.35].CGColor;
     [card addSubview:self.colorPreview];
 
-    UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(14, 278, card.bounds.size.width - 28, 42)];
+    [card addSubview:[self label:@"أيقونة معاينة لون الخلفية" y:396]];
+    self.bgColorPreview = [[UIView alloc] initWithFrame:CGRectMake(card.bounds.size.width - 56, 394, 28, 28)];
+    self.bgColorPreview.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    self.bgColorPreview.layer.cornerRadius = 14;
+    self.bgColorPreview.layer.borderWidth = 1;
+    self.bgColorPreview.layer.borderColor = [[UIColor whiteColor] colorWithAlphaComponent:0.35].CGColor;
+    [card addSubview:self.bgColorPreview];
+
+    UILabel *hint = [[UILabel alloc] initWithFrame:CGRectMake(14, 426, card.bounds.size.width - 28, 32)];
     hint.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    hint.numberOfLines = 2;
-    hint.text = @"كل سطر OCR يستخدم لونه الأصلي تلقائيًا عند التفعيل. اللون اليدوي يعمل كخيار بديل.";
+    hint.numberOfLines = 1;
+    hint.text = @"يمكنك ضبط لون الخلفية وشفافيتها بدون التأثير على بقية الوظائف.";
     hint.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.84];
     hint.font = [UIFont systemFontOfSize:12];
     [card addSubview:hint];
@@ -664,12 +723,17 @@ static void TOTranslateViewTree(UIView *view) {
     m.ocrAutoColorEnabled = self.autoColorSwitch.on;
     m.ocrManualHue = self.hueSlider.value;
     m.ocrManualSaturation = self.saturationSlider.value;
+    m.ocrBackgroundHue = self.bgHueSlider.value;
+    m.ocrBackgroundSaturation = self.bgSaturationSlider.value;
     m.ocrBackgroundAlpha = self.bgAlphaSlider.value;
 
     self.colorPreview.backgroundColor = [m ocrManualUIColor];
+    self.bgColorPreview.backgroundColor = [m ocrBackgroundUIColor];
 
     self.hueValue.text = [NSString stringWithFormat:@"%.0f%%", self.hueSlider.value * 100.0];
     self.satValue.text = [NSString stringWithFormat:@"%.0f%%", self.saturationSlider.value * 100.0];
+    self.bgHueValue.text = [NSString stringWithFormat:@"%.0f%%", self.bgHueSlider.value * 100.0];
+    self.bgSatValue.text = [NSString stringWithFormat:@"%.0f%%", self.bgSaturationSlider.value * 100.0];
     self.bgValue.text = [NSString stringWithFormat:@"%.0f%%", self.bgAlphaSlider.value * 100.0];
 
     BOOL manualEnabled = !self.autoColorSwitch.on;
@@ -698,6 +762,85 @@ static void TOTranslateViewTree(UIView *view) {
 - (void)closePressed {
     [self dismissViewControllerAnimated:YES completion:nil];
 }
+
+@end
+
+@implementation TOTranslationSettingsViewController
+
+- (UIButton *)sectionButtonWithTitle:(NSString *)title y:(CGFloat)y action:(SEL)action {
+    UIButton *b = [UIButton buttonWithType:UIButtonTypeSystem];
+    b.frame = CGRectMake(14, y, self.view.bounds.size.width - 52, 40);
+    b.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    b.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.08];
+    b.layer.cornerRadius = 10;
+    [b setTitle:title forState:UIControlStateNormal];
+    [b setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    b.titleLabel.font = [UIFont systemFontOfSize:14 weight:UIFontWeightSemibold];
+    b.contentHorizontalAlignment = UIControlContentHorizontalAlignmentRight;
+    b.contentEdgeInsets = UIEdgeInsetsMake(0, 12, 0, 12);
+    [b addTarget:self action:action forControlEvents:UIControlEventTouchUpInside];
+    return b;
+}
+
+- (UIView *)sectionCardWithTitle:(NSString *)title y:(CGFloat)y height:(CGFloat)h {
+    UIView *card = [[UIView alloc] initWithFrame:CGRectMake(12, y, self.view.bounds.size.width - 24, h)];
+    card.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    card.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.06];
+    card.layer.cornerRadius = 12;
+
+    UILabel *label = [[UILabel alloc] initWithFrame:CGRectMake(14, 12, card.bounds.size.width - 28, 22)];
+    label.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    label.text = title;
+    label.textColor = UIColor.whiteColor;
+    label.font = [UIFont boldSystemFontOfSize:15];
+    [card addSubview:label];
+    return card;
+}
+
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    self.view.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
+
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 44, self.view.bounds.size.width - 120, 28)];
+    title.autoresizingMask = UIViewAutoresizingFlexibleWidth;
+    title.text = @"إعدادات الترجمة";
+    title.textColor = UIColor.whiteColor;
+    title.font = [UIFont boldSystemFontOfSize:20];
+    [self.view addSubview:title];
+
+    UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
+    close.frame = CGRectMake(self.view.bounds.size.width - 90, 40, 74, 36);
+    close.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+    [close setTitle:@"إغلاق" forState:UIControlStateNormal];
+    [close setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    close.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.14];
+    close.layer.cornerRadius = 10;
+    [close addTarget:self action:@selector(closePressed) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:close];
+
+    UIView *translationCard = [self sectionCardWithTitle:@"إعدادات الترجمة" y:92 height:138];
+    [translationCard addSubview:[self sectionButtonWithTitle:@"اختيار لغة المصدر" y:44 action:@selector(sourcePressed)]];
+    [translationCard addSubview:[self sectionButtonWithTitle:@"اختيار لغة الهدف" y:88 action:@selector(targetPressed)]];
+    [self.view addSubview:translationCard];
+
+    UIView *ocrCard = [self sectionCardWithTitle:@"إعدادات OCR" y:242 height:182];
+    [ocrCard addSubview:[self sectionButtonWithTitle:@"ترجمة الصفحة OCR" y:44 action:@selector(startOCRPressed)]];
+    [ocrCard addSubview:[self sectionButtonWithTitle:@"إعدادات مظهر OCR" y:88 action:@selector(appearancePressed)]];
+    [ocrCard addSubview:[self sectionButtonWithTitle:@"تغيير حجم نص OCR" y:132 action:@selector(sizePressed)]];
+    [self.view addSubview:ocrCard];
+
+    UIView *otherCard = [self sectionCardWithTitle:@"أخرى" y:436 height:94];
+    [otherCard addSubview:[self sectionButtonWithTitle:@"صفحة المطور" y:44 action:@selector(developerPressed)]];
+    [self.view addSubview:otherCard];
+}
+
+- (void)closePressed { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)sourcePressed { [self.overlayController showLanguagePicker:YES]; }
+- (void)targetPressed { [self.overlayController showLanguagePicker:NO]; }
+- (void)startOCRPressed { [self.overlayController startOCR]; }
+- (void)appearancePressed { [self.overlayController showOCRAppearanceSettings]; }
+- (void)sizePressed { [self.overlayController showOCRTextSizePicker]; }
+- (void)developerPressed { [self.overlayController openDeveloperPage]; }
 
 @end
 
@@ -886,6 +1029,20 @@ static void TOTranslateViewTree(UIView *view) {
     [top presentViewController:vc animated:YES completion:nil];
 }
 
+- (void)openDeveloperPage {
+    NSURL *url = [NSURL URLWithString:@"https://instagram.com/wiz.wizo1/"];
+    if (!url) return;
+    UIApplication *app = UIApplication.sharedApplication;
+    if ([app respondsToSelector:@selector(openURL:options:completionHandler:)]) {
+        [app openURL:url options:@{} completionHandler:nil];
+    } else {
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
+        [app openURL:url];
+#pragma clang diagnostic pop
+    }
+}
+
 - (void)startOCR {
     UIWindow *w = self.attachedWindow ?: TOActiveWindow();
     if (!w) {
@@ -913,34 +1070,10 @@ static void TOTranslateViewTree(UIView *view) {
 - (void)showSettings {
     UIViewController *top = TOTopViewController();
     if (!top) return;
-    TOTranslationManager *m = TOTranslationManager.shared;
-
-    NSString *msg = [NSString stringWithFormat:@"المصدر: %@\nالهدف: %@", m.sourceLanguage, m.targetLanguage];
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"إعدادات الترجمة" message:msg preferredStyle:UIAlertControllerStyleActionSheet];
-
-    [sheet addAction:[UIAlertAction actionWithTitle:@"ترجمة الصفحة OCR" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self startOCR]; }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"إعدادات مظهر OCR" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showOCRAppearanceSettings]; }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"تغيير حجم نص OCR" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showOCRTextSizePicker]; }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"اختيار لغة المصدر" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showLanguagePicker:YES]; }]];
-    [sheet addAction:[UIAlertAction actionWithTitle:@"اختيار لغة الهدف" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) { [self showLanguagePicker:NO]; }]];
-
-    [sheet addAction:[UIAlertAction actionWithTitle:@"صفحة المطور" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-        NSURL *url = [NSURL URLWithString:@"https://instagram.com/wiz.wizo1/"];
-        if (!url) return;
-        UIApplication *app = UIApplication.sharedApplication;
-        if ([app respondsToSelector:@selector(openURL:options:completionHandler:)]) {
-            [app openURL:url options:@{} completionHandler:nil];
-        } else {
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wdeprecated-declarations"
-            [app openURL:url];
-#pragma clang diagnostic pop
-        }
-    }]];
-
-    [sheet addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
-    [self configurePopover:sheet];
-    [top presentViewController:sheet animated:YES completion:nil];
+    TOTranslationSettingsViewController *vc = [TOTranslationSettingsViewController new];
+    vc.modalPresentationStyle = UIModalPresentationPageSheet;
+    vc.overlayController = self;
+    [top presentViewController:vc animated:YES completion:nil];
 }
 
 - (void)singleTap { [self translateCurrentPage]; }
