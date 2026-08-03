@@ -312,6 +312,48 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 
 @end
 
+static NSString *TOUIString(NSString *text) {
+    if (text.length == 0) return @"";
+
+    TOTranslationManager *m = [TOTranslationManager shared];
+    NSString *target = m.targetLanguage ?: @"ar";
+    if ([target isEqualToString:@"ar"]) return text;
+
+    NSString *key = [NSString stringWithFormat:@"ar|%@|%@", target, text];
+    NSString *cached = [m.cache objectForKey:key] ?: m.persistentCache[key];
+    if (cached.length > 0) return cached;
+
+    [m translateText:text completion:^(__unused NSString *translated) {}];
+    return text;
+}
+
+static void TOWarmupUILocalization(void) {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    NSString *target = m.targetLanguage ?: @"ar";
+    if ([target isEqualToString:@"ar"]) return;
+
+    static NSArray<NSString *> *phrases;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        phrases = @[
+            @"إعدادات الترجمة", @"الترجمه من و إلى", @"إعدادات OCR", @"أخرى", @"صفحة المطور",
+            @"اختيار لغة المصدر", @"اختيار لغة الهدف", @"إعدادات مظهر OCR", @"تغيير حجم نص OCR",
+            @"إعدادات لون النص", @"إعدادات لون الخلفية", @"تفعيل اللون التلقائي للنص", @"تعطيل اللون التلقائي للنص",
+            @"تفعيل اللون التلقائي لخلفية النص", @"تعطيل اللون التلقائي لخلفية النص",
+            @"لون النص: الدرجة اللونية", @"لون النص: التشبع", @"لون الخلفية: الدرجة اللونية",
+            @"لون الخلفية: التشبع", @"تعتيم الخلفية", @"تعتيم خلفية النص", @"رجوع", @"إلغاء",
+            @"تم", @"إغلاق", @"حفظ", @"حجم نص OCR", @"نتيجة OCR", @"المصدر", @"الهدف",
+            @"جارٍ التقاط الصفحة وتحليلها...", @"تمت محاولة الترجمة"
+        ];
+    });
+
+    for (NSString *text in phrases) {
+        NSString *key = [NSString stringWithFormat:@"ar|%@|%@", target, text];
+        if ([m.cache objectForKey:key] || m.persistentCache[key]) continue;
+        [m translateText:text completion:^(__unused NSString *translated) {}];
+    }
+}
+
 static void TOTranslateViewTree(UIView *view) {
     if (!view || view.hidden || view.alpha <= 0.01) return;
 
@@ -1561,16 +1603,19 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 }
 
 - (void)showLanguagePicker:(BOOL)isSource {
+    TOWarmupUILocalization();
     UIViewController *top = TOTopViewController();
     if (!top) return;
     TOTranslationManager *m = TOTranslationManager.shared;
-    UIAlertController *picker = [UIAlertController alertControllerWithTitle:(isSource ? @"اختر لغة المصدر" : @"اختر لغة الهدف") message:@"يمكنك تغيير اللغة في أي وقت" preferredStyle:UIAlertControllerStyleActionSheet];
+    UIAlertController *picker = [UIAlertController alertControllerWithTitle:TOUIString(isSource ? @"اختر لغة المصدر" : @"اختر لغة الهدف") message:TOUIString(@"يمكنك تغيير اللغة في أي وقت") preferredStyle:UIAlertControllerStyleActionSheet];
 
     NSArray<NSDictionary<NSString *, NSString *> *> *langs = TOSupportedLanguages();
 
     for (NSDictionary *item in langs) {
         NSString *code = item[@"code"];
-        NSString *name = TODisplayLanguageName(code, m.targetLanguage, item[@"name"]);
+        NSString *fallbackName = item[@"name"];
+        if ([code isEqualToString:@"auto"]) fallbackName = TOUIString(fallbackName);
+        NSString *name = TODisplayLanguageName(code, m.targetLanguage, fallbackName);
         if (!isSource && [code isEqualToString:@"auto"]) continue;
 
         NSString *current = isSource ? m.sourceLanguage : m.targetLanguage;
@@ -1578,11 +1623,11 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [picker addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
             if (isSource) m.sourceLanguage = code; else m.targetLanguage = code;
             [m saveSettings];
-            [self showToast:[NSString stringWithFormat:@"%@: %@", isSource ? @"المصدر" : @"الهدف", name]];
+            [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(isSource ? @"المصدر" : @"الهدف"), name]];
         }]];
     }
 
-    [picker addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
+    [picker addAction:[UIAlertAction actionWithTitle:TOUIString(@"إلغاء") style:UIAlertActionStyleCancel handler:nil]];
     [self configurePopover:picker];
     [top presentViewController:picker animated:YES completion:^{
         TOTranslateControllerTree(picker);
@@ -1590,8 +1635,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 }
 
 - (void)showOCRTextSizePicker {
+    TOWarmupUILocalization();
     TOTranslationManager *m = TOTranslationManager.shared;
-    [self presentSliderPopupWithTitle:@"حجم نص OCR"
+    [self presentSliderPopupWithTitle:TOUIString(@"حجم نص OCR")
                                  mode:TOOverlaySliderModeTextSize
                             minValue:0.7
                             maxValue:2.0
@@ -1601,31 +1647,32 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 }
 
 - (void)showOCRAppearanceSettings {
+    TOWarmupUILocalization();
     UIViewController *top = TOTopViewController();
     if (!top) return;
 
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"إعدادات مظهر OCR"
-                                                                   message:@"تخصيص لون النص والخلفية"
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TOUIString(@"إعدادات مظهر OCR")
+                                                                   message:TOUIString(@"تخصيص لون النص والخلفية")
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"إعدادات لون النص ▸" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+    [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", TOUIString(@"إعدادات لون النص")] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         UIViewController *menuTop = TOTopViewController();
         if (!menuTop) return;
 
         TOTranslationManager *innerM = TOTranslationManager.shared;
-        NSString *innerAutoColorTitle = innerM.ocrAutoColorEnabled ? @"تعطيل اللون التلقائي للنص" : @"تفعيل اللون التلقائي للنص";
-        UIAlertController *textSheet = [UIAlertController alertControllerWithTitle:@"إعدادات لون النص"
+        NSString *innerAutoColorTitle = TOUIString(innerM.ocrAutoColorEnabled ? @"تعطيل اللون التلقائي للنص" : @"تفعيل اللون التلقائي للنص");
+        UIAlertController *textSheet = [UIAlertController alertControllerWithTitle:TOUIString(@"إعدادات لون النص")
                                                                             message:nil
                                                                      preferredStyle:UIAlertControllerStyleActionSheet];
 
         [textSheet addAction:[UIAlertAction actionWithTitle:innerAutoColorTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
             innerM.ocrAutoColorEnabled = !innerM.ocrAutoColorEnabled;
             [innerM saveSettings];
-            [self showToast:(innerM.ocrAutoColorEnabled ? @"تم تفعيل اللون التلقائي" : @"تم تعطيل اللون التلقائي")];
+            [self showToast:TOUIString(innerM.ocrAutoColorEnabled ? @"تم تفعيل اللون التلقائي" : @"تم تعطيل اللون التلقائي")];
         }]];
 
-        [textSheet addAction:[UIAlertAction actionWithTitle:@"لون النص: الدرجة اللونية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-            [self presentSliderPopupWithTitle:@"لون النص - الدرجة اللونية"
+        [textSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"لون النص: الدرجة اللونية") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [self presentSliderPopupWithTitle:TOUIString(@"لون النص - الدرجة اللونية")
                                          mode:TOOverlaySliderModeTextHue
                                     minValue:0
                                     maxValue:1
@@ -1634,8 +1681,8 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                            showsSizePreview:NO];
         }]];
 
-        [textSheet addAction:[UIAlertAction actionWithTitle:@"لون النص: التشبع" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-            [self presentSliderPopupWithTitle:@"لون النص - التشبع"
+        [textSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"لون النص: التشبع") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [self presentSliderPopupWithTitle:TOUIString(@"لون النص - التشبع")
                                          mode:TOOverlaySliderModeTextSaturation
                                     minValue:0
                                     maxValue:1
@@ -1644,31 +1691,31 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                            showsSizePreview:NO];
         }]];
 
-        [textSheet addAction:[UIAlertAction actionWithTitle:@"رجوع" style:UIAlertActionStyleCancel handler:nil]];
+        [textSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
         [self configurePopover:textSheet];
         [menuTop presentViewController:textSheet animated:YES completion:^{
             TOTranslateControllerTree(textSheet);
         }];
     }]];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"إعدادات لون الخلفية ▸" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+    [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", TOUIString(@"إعدادات لون الخلفية")] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         UIViewController *menuTop = TOTopViewController();
         if (!menuTop) return;
 
         TOTranslationManager *innerM = TOTranslationManager.shared;
-        NSString *innerAutoBackgroundTitle = innerM.ocrBackgroundAutoColorEnabled ? @"تعطيل اللون التلقائي لخلفية النص" : @"تفعيل اللون التلقائي لخلفية النص";
-        UIAlertController *bgSheet = [UIAlertController alertControllerWithTitle:@"إعدادات لون الخلفية"
+        NSString *innerAutoBackgroundTitle = TOUIString(innerM.ocrBackgroundAutoColorEnabled ? @"تعطيل اللون التلقائي لخلفية النص" : @"تفعيل اللون التلقائي لخلفية النص");
+        UIAlertController *bgSheet = [UIAlertController alertControllerWithTitle:TOUIString(@"إعدادات لون الخلفية")
                                                                           message:nil
                                                                    preferredStyle:UIAlertControllerStyleActionSheet];
 
         [bgSheet addAction:[UIAlertAction actionWithTitle:innerAutoBackgroundTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
             innerM.ocrBackgroundAutoColorEnabled = !innerM.ocrBackgroundAutoColorEnabled;
             [innerM saveSettings];
-            [self showToast:(innerM.ocrBackgroundAutoColorEnabled ? @"تم تفعيل اللون التلقائي لخلفية النص" : @"تم تعطيل اللون التلقائي لخلفية النص")];
+            [self showToast:TOUIString(innerM.ocrBackgroundAutoColorEnabled ? @"تم تفعيل اللون التلقائي لخلفية النص" : @"تم تعطيل اللون التلقائي لخلفية النص")];
         }]];
 
-        [bgSheet addAction:[UIAlertAction actionWithTitle:@"لون الخلفية: الدرجة اللونية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-            [self presentSliderPopupWithTitle:@"لون الخلفية - الدرجة اللونية"
+        [bgSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"لون الخلفية: الدرجة اللونية") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [self presentSliderPopupWithTitle:TOUIString(@"لون الخلفية - الدرجة اللونية")
                                          mode:TOOverlaySliderModeBackgroundHue
                                     minValue:0
                                     maxValue:1
@@ -1677,8 +1724,8 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                            showsSizePreview:NO];
         }]];
 
-        [bgSheet addAction:[UIAlertAction actionWithTitle:@"لون الخلفية: التشبع" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-            [self presentSliderPopupWithTitle:@"لون الخلفية - التشبع"
+        [bgSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"لون الخلفية: التشبع") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [self presentSliderPopupWithTitle:TOUIString(@"لون الخلفية - التشبع")
                                          mode:TOOverlaySliderModeBackgroundSaturation
                                     minValue:0
                                     maxValue:1
@@ -1687,8 +1734,8 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                            showsSizePreview:NO];
         }]];
 
-        [bgSheet addAction:[UIAlertAction actionWithTitle:@"تعتيم الخلفية" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-            [self presentSliderPopupWithTitle:@"تعتيم خلفية النص"
+        [bgSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"تعتيم الخلفية") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [self presentSliderPopupWithTitle:TOUIString(@"تعتيم خلفية النص")
                                          mode:TOOverlaySliderModeBackgroundAlpha
                                     minValue:0
                                     maxValue:1
@@ -1697,14 +1744,14 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                            showsSizePreview:NO];
         }]];
 
-        [bgSheet addAction:[UIAlertAction actionWithTitle:@"رجوع" style:UIAlertActionStyleCancel handler:nil]];
+        [bgSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
         [self configurePopover:bgSheet];
         [menuTop presentViewController:bgSheet animated:YES completion:^{
             TOTranslateControllerTree(bgSheet);
         }];
     }]];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"إلغاء") style:UIAlertActionStyleCancel handler:nil]];
     [self configurePopover:sheet];
     [top presentViewController:sheet animated:YES completion:^{
         TOTranslateControllerTree(sheet);
@@ -1750,50 +1797,51 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 }
 
 - (void)showSettings {
+    TOWarmupUILocalization();
     UIViewController *top = TOTopViewController();
     if (!top) return;
     TOTranslationManager *m = TOTranslationManager.shared;
-    NSString *msg = [NSString stringWithFormat:@"المصدر: %@\nالهدف: %@", m.sourceLanguage, m.targetLanguage];
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:@"إعدادات الترجمة"
+    NSString *msg = [NSString stringWithFormat:@"%@: %@\n%@: %@", TOUIString(@"المصدر"), m.sourceLanguage, TOUIString(@"الهدف"), m.targetLanguage];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TOUIString(@"إعدادات الترجمة")
                                                                    message:msg
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"الترجمه من و إلى ▸" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+    [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", TOUIString(@"الترجمه من و إلى")] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         UIViewController *menuTop = TOTopViewController();
         if (!menuTop) return;
-        UIAlertController *langSheet = [UIAlertController alertControllerWithTitle:@"الترجمه من و إلى"
+        UIAlertController *langSheet = [UIAlertController alertControllerWithTitle:TOUIString(@"الترجمه من و إلى")
                                                                             message:nil
                                                                      preferredStyle:UIAlertControllerStyleActionSheet];
-        [langSheet addAction:[UIAlertAction actionWithTitle:@"اختيار لغة المصدر" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showLanguagePicker:YES]; }]];
-        [langSheet addAction:[UIAlertAction actionWithTitle:@"اختيار لغة الهدف" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showLanguagePicker:NO]; }]];
-        [langSheet addAction:[UIAlertAction actionWithTitle:@"رجوع" style:UIAlertActionStyleCancel handler:nil]];
+        [langSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"اختيار لغة المصدر") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showLanguagePicker:YES]; }]];
+        [langSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"اختيار لغة الهدف") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showLanguagePicker:NO]; }]];
+        [langSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
         [self configurePopover:langSheet];
         [menuTop presentViewController:langSheet animated:YES completion:^{
             TOTranslateControllerTree(langSheet);
         }];
     }]];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"إعدادات الترجمة ▸" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+    [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", TOUIString(@"إعدادات الترجمة")] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         UIViewController *menuTop = TOTopViewController();
         if (!menuTop) return;
-        UIAlertController *ocrSheet = [UIAlertController alertControllerWithTitle:@"إعدادات الترجمة"
+        UIAlertController *ocrSheet = [UIAlertController alertControllerWithTitle:TOUIString(@"إعدادات الترجمة")
                                                                            message:nil
                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
-        [ocrSheet addAction:[UIAlertAction actionWithTitle:@"ترجمة الصفحة OCR" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self startOCR]; }]];
-        [ocrSheet addAction:[UIAlertAction actionWithTitle:@"إعدادات مظهر OCR" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRAppearanceSettings]; }]];
-        [ocrSheet addAction:[UIAlertAction actionWithTitle:@"تغيير حجم نص OCR" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRTextSizePicker]; }]];
-        [ocrSheet addAction:[UIAlertAction actionWithTitle:@"رجوع" style:UIAlertActionStyleCancel handler:nil]];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"ترجمة الصفحة OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self startOCR]; }]];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"إعدادات مظهر OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRAppearanceSettings]; }]];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"تغيير حجم نص OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRTextSizePicker]; }]];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
         [self configurePopover:ocrSheet];
         [menuTop presentViewController:ocrSheet animated:YES completion:^{
             TOTranslateControllerTree(ocrSheet);
         }];
     }]];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"صفحة المطور" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"صفحة المطور") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         [self openDeveloperPage];
     }]];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:@"إلغاء" style:UIAlertActionStyleCancel handler:nil]];
+    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"إلغاء") style:UIAlertActionStyleCancel handler:nil]];
     [self configurePopover:sheet];
     [top presentViewController:sheet animated:YES completion:^{
         TOTranslateControllerTree(sheet);
