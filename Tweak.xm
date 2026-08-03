@@ -510,6 +510,38 @@ static void TOForceImmediateUILocalizationRefresh(void) {
     });
 }
 
+static CGFloat TOFittedFontSizeForText(NSString *text, CGRect rect, CGFloat minSize, CGFloat maxSize) {
+    NSString *sample = text.length > 0 ? text : @"Aa";
+    CGRect drawRect = CGRectInset(rect, 1.0, 0.0);
+    if (CGRectIsEmpty(drawRect) || drawRect.size.width < 2.0 || drawRect.size.height < 2.0) return minSize;
+
+    NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
+    paragraph.alignment = NSTextAlignmentNatural;
+    paragraph.lineBreakMode = NSLineBreakByWordWrapping;
+
+    CGFloat size = MIN(MAX(maxSize, minSize), 44.0);
+    for (NSInteger i = 0; i < 30; i++) {
+        UIFont *font = [UIFont boldSystemFontOfSize:size];
+        NSDictionary *attrs = @{
+            NSFontAttributeName: font,
+            NSParagraphStyleAttributeName: paragraph
+        };
+        CGSize measured = [sample boundingRectWithSize:drawRect.size
+                                               options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                            attributes:attrs
+                                               context:nil].size;
+        if (measured.height <= drawRect.size.height + 0.5 && measured.width <= drawRect.size.width + 0.5) {
+            break;
+        }
+        size -= 1.0;
+        if (size <= minSize) {
+            size = minSize;
+            break;
+        }
+    }
+    return MAX(minSize, size);
+}
+
 static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictionary *> *items) {
     if (!image || items.count == 0) return image;
 
@@ -527,7 +559,9 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         if (CGRectIsEmpty(rect) || rect.size.width < 2 || rect.size.height < 2) continue;
 
         CGFloat scale = m.ocrTextScale > 0.01 ? m.ocrTextScale : 1.0;
-        CGFloat fontSize = MAX(10.0, MIN(34.0, rect.size.height * 0.72 * scale));
+        NSString *sourceText = item[@"source"] ?: text;
+        CGFloat originalFit = TOFittedFontSizeForText(sourceText, rect, 8.0, 34.0);
+        CGFloat fontSize = MAX(8.0, MIN(40.0, originalFit * scale));
         UIColor *fg = nil;
         if (m.ocrAutoColorEnabled) fg = item[@"detectedColor"];
         if (!fg) fg = [m ocrManualUIColor];
