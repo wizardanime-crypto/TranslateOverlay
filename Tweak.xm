@@ -45,6 +45,18 @@ typedef NS_ENUM(NSInteger, TOTranslationTapMode) {
     TOTranslationTapModeLive = 2
 };
 
+static volatile NSInteger gTOTranslationTapModeSnapshot = TOTranslationTapModeNormal;
+static volatile BOOL gTOLiveTranslateEnabledSnapshot = NO;
+
+static void TOUpdateTranslationModeSnapshot(NSInteger mode, BOOL liveEnabled) {
+    gTOTranslationTapModeSnapshot = mode;
+    gTOLiveTranslateEnabledSnapshot = liveEnabled;
+}
+
+static BOOL TOIsLiveModeSessionActiveFast(void) {
+    return (gTOTranslationTapModeSnapshot == TOTranslationTapModeLive) && gTOLiveTranslateEnabledSnapshot;
+}
+
 static NSString *TONormalizedLocaleIdentifier(NSString *languageCode) {
     if (languageCode.length == 0) return @"en";
     NSString *code = [languageCode stringByReplacingOccurrencesOfString:@"_" withString:@"-"];
@@ -63,14 +75,9 @@ static IMP kTOUIListSetAttributedTextOriginalIMP = NULL;
 static IMP kTOUIListSetAttributedSecondaryTextOriginalIMP = NULL;
 
 static BOOL TOIsUITranslationPipelineEnabled(void) {
-    Class managerClass = NSClassFromString(@"TOTranslationManager");
-    if (!managerClass || ![managerClass respondsToSelector:@selector(shared)]) return NO;
-    id m = ((id (*)(id, SEL))objc_msgSend)(managerClass, @selector(shared));
-    if (!m || ![m respondsToSelector:@selector(translationTapMode)]) return NO;
-    NSInteger mode = ((NSInteger (*)(id, SEL))objc_msgSend)(m, @selector(translationTapMode));
     // Keep hook-based UI translation exclusive to normal mode.
     // Live mode uses OCR overlay path to avoid scroll jank from frequent label mutations.
-    return (mode == TOTranslationTapModeNormal);
+    return (gTOTranslationTapModeSnapshot == TOTranslationTapModeNormal);
 }
 
 static NSAttributedString *TORebuildAttributedString(NSAttributedString *source, NSString *translated) {
@@ -394,6 +401,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     NSInteger tapMode = [d integerForKey:kTOTranslationTapModeKey];
     if (tapMode < TOTranslationTapModeNormal || tapMode > TOTranslationTapModeLive) tapMode = TOTranslationTapModeNormal;
     self.translationTapMode = tapMode;
+    TOUpdateTranslationModeSnapshot(self.translationTapMode, NO);
 
     CGFloat hue = [d doubleForKey:kTOOCRManualHueKey];
     CGFloat sat = [d doubleForKey:kTOOCRManualSaturationKey];
@@ -1882,6 +1890,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, strong) NSTimer *liveScrollSettleTimer;
 @property (nonatomic, assign) BOOL liveScrollPendingRefresh;
 @property (nonatomic, assign) BOOL liveScrollActive;
+@property (nonatomic, assign) NSTimeInterval liveLastScrollSignalTime;
 @property (nonatomic, strong) NSTimer *appTranslateTimer;
 @property (nonatomic, assign) NSUInteger appTranslateBurstGeneration;
 + (instancetype)shared;
@@ -2835,10 +2844,15 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     TOTranslationManager *m = [TOTranslationManager shared];
     if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
 
+    NSTimeInterval now = CACurrentMediaTime();
+    if ((now - self.liveLastScrollSignalTime) < 0.14) return;
+    self.liveLastScrollSignalTime = now;
+
+    BOOL wasScrollActive = self.liveScrollActive;
     self.liveScrollActive = YES;
-    self.liveScrollInteractionUntil = MAX(self.liveScrollInteractionUntil, CACurrentMediaTime() + 0.55);
+    self.liveScrollInteractionUntil = MAX(self.liveScrollInteractionUntil, now + 0.55);
     self.liveScrollPendingRefresh = YES;
-    if (self.liveOverlayView) self.liveOverlayView.hidden = YES;
+    if (!wasScrollActive && self.liveOverlayView) self.liveOverlayView.hidden = YES;
     [self scheduleLiveRefreshAfterScrollSettled];
 }
 
@@ -2896,6 +2910,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 - (void)syncLiveTranslationLoopState {
     TOTranslationManager *m = [TOTranslationManager shared];
     BOOL shouldRun = (m.translationTapMode == TOTranslationTapModeLive && self.liveTranslateEnabled);
+    TOUpdateTranslationModeSnapshot(m.translationTapMode, self.liveTranslateEnabled);
 
     if (shouldRun) {
         BOOL didCreateTimer = NO;
@@ -2915,6 +2930,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.liveOCRInFlight = NO;
         self.liveScrollPendingRefresh = NO;
         self.liveScrollActive = NO;
+        self.liveLastScrollSignalTime = 0;
         if (self.liveScrollSettleTimer) {
             [self.liveScrollSettleTimer invalidate];
             self.liveScrollSettleTimer = nil;
@@ -2948,6 +2964,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             m.translationTapMode = mode;
             m.mangaTranslationModeEnabled = (mode == TOTranslationTapModeManga);
             if (mode != TOTranslationTapModeLive) self.liveTranslateEnabled = NO;
+            TOUpdateTranslationModeSnapshot(m.translationTapMode, self.liveTranslateEnabled);
             [m saveSettings];
             [self syncLiveTranslationLoopState];
             [self syncAppTranslationLoopState];
@@ -3098,12 +3115,14 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             break;
         case TOTranslationTapModeLive:
             self.liveTranslateEnabled = !self.liveTranslateEnabled;
+            TOUpdateTranslationModeSnapshot(m.translationTapMode, self.liveTranslateEnabled);
             [self syncLiveTranslationLoopState];
             if (self.liveTranslateEnabled) {
                 [self requestLiveOCROverlayRefresh];
                 [self scheduleLiveTranslationBurst];
                 [self showToast:TOUIString(@"تم تفعيل نمط الترجمه المباشره")];
             } else {
+                TOUpdateTranslationModeSnapshot(m.translationTapMode, NO);
                 [self showToast:TOUIString(@"تم إيقاف نمط الترجمه المباشره")];
             }
             break;
@@ -3524,12 +3543,16 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
 - (void)setContentOffset:(CGPoint)contentOffset {
     %orig;
-    [[TOFloatingOverlayController shared] handleScrollActivity];
+    if (TOIsLiveModeSessionActiveFast()) {
+        [[TOFloatingOverlayController shared] handleScrollActivity];
+    }
 }
 
 - (void)setContentOffset:(CGPoint)contentOffset animated:(BOOL)animated {
     %orig;
-    [[TOFloatingOverlayController shared] handleScrollActivity];
+    if (TOIsLiveModeSessionActiveFast()) {
+        [[TOFloatingOverlayController shared] handleScrollActivity];
+    }
 }
 
 %end
