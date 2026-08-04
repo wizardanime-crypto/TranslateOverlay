@@ -47,6 +47,7 @@ typedef NS_ENUM(NSInteger, TOTranslationTapMode) {
 
 static volatile NSInteger gTOTranslationTapModeSnapshot = TOTranslationTapModeNormal;
 static volatile BOOL gTOLiveTranslateEnabledSnapshot = NO;
+static volatile BOOL gTOLiveScrollActiveSnapshot = NO;
 
 static void TOUpdateTranslationModeSnapshot(NSInteger mode, BOOL liveEnabled) {
     gTOTranslationTapModeSnapshot = mode;
@@ -55,6 +56,14 @@ static void TOUpdateTranslationModeSnapshot(NSInteger mode, BOOL liveEnabled) {
 
 static BOOL TOIsLiveModeSessionActiveFast(void) {
     return (gTOTranslationTapModeSnapshot == TOTranslationTapModeLive) && gTOLiveTranslateEnabledSnapshot;
+}
+
+static void TOSetLiveScrollActiveSnapshot(BOOL active) {
+    gTOLiveScrollActiveSnapshot = active;
+}
+
+static BOOL TOIsLiveScrollActiveFast(void) {
+    return gTOLiveScrollActiveSnapshot;
 }
 
 static NSString *TONormalizedLocaleIdentifier(NSString *languageCode) {
@@ -1700,6 +1709,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 }
 
 - (void)buildLiveTranslatedOverlayForWindow:(UIWindow *)window excludingViews:(NSArray<UIView *> *)excludedViews completion:(void (^)(UIImage *resultImage))completion {
+    if (TOIsLiveScrollActiveFast()) {
+        if (completion) completion(nil);
+        return;
+    }
+
     UIImage *image = [self captureScreenshot:window excludingViews:excludedViews ?: @[]];
     if (!image || !image.CGImage) {
         if (completion) completion(nil);
@@ -1753,6 +1767,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                 return;
             }
 
+            if (TOIsLiveScrollActiveFast()) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (completion) completion(nil);
+                });
+                return;
+            }
+
             dispatch_group_t g = dispatch_group_create();
             NSMutableArray<NSMutableDictionary *> *translated = [NSMutableArray arrayWithCapacity:items.count];
             for (NSDictionary *raw in items) [translated addObject:[raw mutableCopy]];
@@ -1767,6 +1788,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
             }
 
             dispatch_group_notify(g, dispatch_get_main_queue(), ^{
+                if (TOIsLiveScrollActiveFast()) {
+                    if (completion) completion(nil);
+                    return;
+                }
                 @synchronized (self) {
                     if (self.liveRecognitionRequest != nil) {
                         // A newer request started; avoid rendering stale overlay.
@@ -2802,7 +2827,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     UIWindow *w = self.attachedWindow ?: TOActiveWindow();
     if (!w) return;
 
-    if (self.liveScrollActive) {
+    if (self.liveScrollActive || TOIsLiveScrollActiveFast()) {
         self.liveOCRNeedsRefresh = YES;
         self.liveScrollPendingRefresh = YES;
         if (self.liveOverlayView) self.liveOverlayView.hidden = YES;
@@ -2906,6 +2931,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     NSTimeInterval now = CACurrentMediaTime();
     BOOL wasScrollActive = self.liveScrollActive;
     self.liveScrollActive = YES;
+    TOSetLiveScrollActiveSnapshot(YES);
     self.liveScrollInteractionUntil = MAX(self.liveScrollInteractionUntil, now + 0.45);
     self.liveScrollPendingRefresh = YES;
     if (!wasScrollActive) {
@@ -2938,6 +2964,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
     if (CACurrentMediaTime() < self.liveScrollInteractionUntil) return;
     self.liveScrollActive = NO;
+    TOSetLiveScrollActiveSnapshot(NO);
     if (!self.liveScrollPendingRefresh) return;
     self.liveScrollPendingRefresh = NO;
     [self requestLiveOCROverlayRefresh];
@@ -2949,7 +2976,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [self syncLiveTranslationLoopState];
         return;
     }
-    if (self.liveScrollActive) return;
+    if (self.liveScrollActive || TOIsLiveScrollActiveFast()) return;
     if (self.liveScrollSettleTimer) return;
     if (CACurrentMediaTime() < self.liveScrollInteractionUntil) return;
     [self requestLiveOCROverlayRefresh];
@@ -2964,6 +2991,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             TOTranslationManager *m = [TOTranslationManager shared];
             if (token != self.liveTranslateBurstGeneration) return;
             if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
+            if (TOIsLiveScrollActiveFast()) return;
             if (CACurrentMediaTime() < self.liveScrollInteractionUntil) return;
             [self requestLiveOCROverlayRefresh];
         });
@@ -2993,6 +3021,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.liveOCRInFlight = NO;
         self.liveScrollPendingRefresh = NO;
         self.liveScrollActive = NO;
+        TOSetLiveScrollActiveSnapshot(NO);
         self.liveLastScrollSignalTime = 0;
         if (self.liveScrollSettleTimer) {
             [self.liveScrollSettleTimer invalidate];
