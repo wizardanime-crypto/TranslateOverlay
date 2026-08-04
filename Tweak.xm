@@ -1747,7 +1747,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
         request.recognitionLevel = VNRequestTextRecognitionLevelFast;
         request.usesLanguageCorrection = NO;
 
-        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
             NSError *err = nil;
             VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:image.CGImage options:@{}];
             [handler performRequests:@[request] error:&err];
@@ -2864,19 +2864,23 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     NSTimeInterval now = CACurrentMediaTime();
     BOOL wasScrollActive = self.liveScrollActive;
     self.liveScrollActive = YES;
-    self.liveScrollInteractionUntil = MAX(self.liveScrollInteractionUntil, now + 0.55);
+    self.liveScrollInteractionUntil = MAX(self.liveScrollInteractionUntil, now + 0.45);
     self.liveScrollPendingRefresh = YES;
+    // Stop current live OCR cycle logically while scrolling for maximum scroll smoothness.
+    self.liveOCRGeneration++;
+    self.liveOCRInFlight = NO;
+    self.liveOCRNeedsRefresh = NO;
     if (!wasScrollActive && self.liveOverlayView) self.liveOverlayView.hidden = YES;
     [self scheduleLiveRefreshAfterScrollSettled];
 }
 
 - (void)scheduleLiveRefreshAfterScrollSettled {
-    NSDate *targetDate = [NSDate dateWithTimeIntervalSinceNow:1.0];
+    NSDate *targetDate = [NSDate dateWithTimeIntervalSinceNow:0.65];
     if (self.liveScrollSettleTimer) {
         self.liveScrollSettleTimer.fireDate = targetDate;
         return;
     }
-    self.liveScrollSettleTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
+    self.liveScrollSettleTimer = [NSTimer scheduledTimerWithTimeInterval:0.65
                                                                    target:self
                                                                  selector:@selector(liveScrollSettledTimerFired)
                                                                  userInfo:nil
@@ -3558,24 +3562,14 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 - (void)setContentOffset:(CGPoint)contentOffset {
     %orig;
     if (TOIsLiveModeSessionActiveFast()) {
-        static NSTimeInterval lastSignalTime = 0;
-        NSTimeInterval now = CACurrentMediaTime();
-        if ((now - lastSignalTime) >= 0.22) {
-            lastSignalTime = now;
-            [[TOFloatingOverlayController shared] beginLiveScrollInteraction];
-        }
+        [[TOFloatingOverlayController shared] beginLiveScrollInteraction];
     }
 }
 
 - (void)setContentOffset:(CGPoint)contentOffset animated:(BOOL)animated {
     %orig;
     if (TOIsLiveModeSessionActiveFast()) {
-        static NSTimeInterval lastAnimatedSignalTime = 0;
-        NSTimeInterval now = CACurrentMediaTime();
-        if ((now - lastAnimatedSignalTime) >= 0.22) {
-            lastAnimatedSignalTime = now;
-            [[TOFloatingOverlayController shared] beginLiveScrollInteraction];
-        }
+        [[TOFloatingOverlayController shared] beginLiveScrollInteraction];
     }
 }
 
