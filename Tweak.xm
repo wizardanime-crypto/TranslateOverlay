@@ -1870,7 +1870,6 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, weak) UIView *activeColorPreviewView;
 @property (nonatomic, weak) UILabel *activeSizePreviewLabel;
 @property (nonatomic, assign) BOOL liveTranslateEnabled;
-@property (nonatomic, assign) NSUInteger liveTranslateGeneration;
 @property (nonatomic, strong) NSTimer *liveTranslateTimer;
 @property (nonatomic, assign) NSUInteger liveTranslateBurstGeneration;
 @property (nonatomic, strong) UIImageView *liveOverlayView;
@@ -1880,6 +1879,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, assign) NSTimeInterval liveScrollInteractionUntil;
 @property (nonatomic, assign) NSTimeInterval liveLastUIRefreshTime;
 @property (nonatomic, assign) NSTimeInterval liveLastOCRRefreshTime;
+@property (nonatomic, strong) NSTimer *liveScrollSettleTimer;
 @property (nonatomic, strong) NSTimer *appTranslateTimer;
 @property (nonatomic, assign) NSUInteger appTranslateBurstGeneration;
 + (instancetype)shared;
@@ -1894,6 +1894,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)syncLiveTranslationLoopState;
 - (void)liveTranslationTimerFired;
 - (void)scheduleLiveTranslationBurst;
+- (void)scheduleLiveRefreshAfterScrollSettled;
+- (void)liveScrollSettledTimerFired;
 - (void)requestLiveOCROverlayRefresh;
 - (void)removeLiveOverlayIfNeeded;
 - (void)syncAppTranslationLoopState;
@@ -2825,14 +2827,28 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
 
     [self syncLiveTranslationLoopState];
-    self.liveScrollInteractionUntil = MAX(self.liveScrollInteractionUntil, CACurrentMediaTime() + 0.65);
+    self.liveScrollInteractionUntil = MAX(self.liveScrollInteractionUntil, CACurrentMediaTime() + 0.75);
+    [self scheduleLiveRefreshAfterScrollSettled];
+}
 
-    NSUInteger token = ++self.liveTranslateGeneration;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.72 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        if (token != self.liveTranslateGeneration) return;
-        if (CACurrentMediaTime() < self.liveScrollInteractionUntil) return;
-        [self requestLiveOCROverlayRefresh];
-    });
+- (void)scheduleLiveRefreshAfterScrollSettled {
+    if (self.liveScrollSettleTimer) {
+        [self.liveScrollSettleTimer invalidate];
+        self.liveScrollSettleTimer = nil;
+    }
+    self.liveScrollSettleTimer = [NSTimer scheduledTimerWithTimeInterval:0.8
+                                                                   target:self
+                                                                 selector:@selector(liveScrollSettledTimerFired)
+                                                                 userInfo:nil
+                                                                  repeats:NO];
+}
+
+- (void)liveScrollSettledTimerFired {
+    self.liveScrollSettleTimer = nil;
+    TOTranslationManager *m = [TOTranslationManager shared];
+    if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
+    if (CACurrentMediaTime() < self.liveScrollInteractionUntil) return;
+    [self requestLiveOCROverlayRefresh];
 }
 
 - (void)liveTranslationTimerFired {
@@ -2880,6 +2896,10 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.liveOCRGeneration++;
         self.liveOCRNeedsRefresh = NO;
         self.liveOCRInFlight = NO;
+        if (self.liveScrollSettleTimer) {
+            [self.liveScrollSettleTimer invalidate];
+            self.liveScrollSettleTimer = nil;
+        }
         self.liveScrollInteractionUntil = 0;
         self.liveLastUIRefreshTime = 0;
         self.liveLastOCRRefreshTime = 0;
