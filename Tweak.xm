@@ -1222,7 +1222,7 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 @interface TOPageOCRController : NSObject
 + (instancetype)shared;
 - (void)presentOCRForWindow:(UIWindow *)window completion:(void (^)(void))completion;
-- (void)buildLiveTranslatedOverlayForWindow:(UIWindow *)window completion:(void (^)(UIImage *resultImage))completion;
+- (void)buildLiveTranslatedOverlayForWindow:(UIWindow *)window excludingViews:(NSArray<UIView *> *)excludedViews completion:(void (^)(UIImage *resultImage))completion;
 @end
 
 @implementation TOPageOCRController
@@ -1239,6 +1239,29 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     [window.layer renderInContext:UIGraphicsGetCurrentContext()];
     UIImage *image = UIGraphicsGetImageFromCurrentImageContext();
     UIGraphicsEndImageContext();
+    return image;
+}
+
+- (UIImage *)captureScreenshot:(UIWindow *)window excludingViews:(NSArray<UIView *> *)excludedViews {
+    NSMutableArray<UIView *> *toggled = [NSMutableArray array];
+    for (UIView *v in excludedViews) {
+        if (!v || v.window != window || v.hidden) continue;
+        [toggled addObject:v];
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        v.hidden = YES;
+        [CATransaction commit];
+    }
+
+    UIImage *image = [self captureScreenshot:window];
+
+    for (UIView *v in toggled) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        v.hidden = NO;
+        [CATransaction commit];
+    }
+
     return image;
 }
 
@@ -1662,8 +1685,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
     return TORenderTranslatedTextOnImage(image, items);
 }
 
-- (void)buildLiveTranslatedOverlayForWindow:(UIWindow *)window completion:(void (^)(UIImage *resultImage))completion {
-    UIImage *image = [self captureScreenshot:window];
+- (void)buildLiveTranslatedOverlayForWindow:(UIWindow *)window excludingViews:(NSArray<UIView *> *)excludedViews completion:(void (^)(UIImage *resultImage))completion {
+    UIImage *image = [self captureScreenshot:window excludingViews:excludedViews ?: @[]];
     if (!image || !image.CGImage) {
         if (completion) completion(nil);
         return;
@@ -2747,13 +2770,11 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     self.liveOCRNeedsRefresh = NO;
     NSUInteger token = ++self.liveOCRGeneration;
 
-    BOOL originalOverlayHidden = self.liveOverlayView.hidden;
-    BOOL originalButtonHidden = self.floatingButton.hidden;
-    self.liveOverlayView.hidden = YES;
-    if (self.floatingButton.superview == w) self.floatingButton.hidden = YES;
+    NSMutableArray<UIView *> *excluded = [NSMutableArray array];
+    if (self.liveOverlayView.superview == w) [excluded addObject:self.liveOverlayView];
+    if (self.floatingButton.superview == w) [excluded addObject:self.floatingButton];
 
-    [[TOPageOCRController shared] buildLiveTranslatedOverlayForWindow:w completion:^(UIImage *resultImage) {
-        if (self.floatingButton.superview == w) self.floatingButton.hidden = originalButtonHidden;
+    [[TOPageOCRController shared] buildLiveTranslatedOverlayForWindow:w excludingViews:excluded completion:^(UIImage *resultImage) {
         self.liveOCRInFlight = NO;
         if (token != self.liveOCRGeneration) return;
 
@@ -2772,8 +2793,6 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                 [w insertSubview:self.liveOverlayView belowSubview:self.floatingButton];
                 [w bringSubviewToFront:self.floatingButton];
             }
-        } else {
-            self.liveOverlayView.hidden = originalOverlayHidden;
         }
 
         if (self.liveOCRNeedsRefresh) {
