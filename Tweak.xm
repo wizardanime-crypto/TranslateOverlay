@@ -1891,7 +1891,6 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, assign) BOOL liveScrollPendingRefresh;
 @property (nonatomic, assign) BOOL liveScrollActive;
 @property (nonatomic, assign) NSTimeInterval liveLastScrollSignalTime;
-@property (nonatomic, assign) BOOL liveTimerSuspendedByScroll;
 @property (nonatomic, strong) NSTimer *appTranslateTimer;
 @property (nonatomic, assign) NSUInteger appTranslateBurstGeneration;
 + (instancetype)shared;
@@ -1903,6 +1902,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)translateCurrentPageWithToast:(BOOL)showToast;
 - (void)showTranslationModeSettings;
 - (void)handleScrollActivity;
+- (void)beginLiveScrollInteraction;
 - (void)syncLiveTranslationLoopState;
 - (void)liveTranslationTimerFired;
 - (void)scheduleLiveTranslationBurst;
@@ -2815,11 +2815,6 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.liveOCRInFlight = NO;
         if (token != self.liveOCRGeneration) return;
 
-        if (self.liveScrollActive || CACurrentMediaTime() < self.liveScrollInteractionUntil) {
-            self.liveScrollPendingRefresh = YES;
-            return;
-        }
-
         TOTranslationManager *inner = [TOTranslationManager shared];
         BOOL stillLive = (inner.translationTapMode == TOTranslationTapModeLive && self.liveTranslateEnabled);
         if (!stillLive) {
@@ -2858,22 +2853,20 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     self.liveScrollActive = YES;
     self.liveScrollInteractionUntil = MAX(self.liveScrollInteractionUntil, now + 0.55);
     self.liveScrollPendingRefresh = YES;
-    if (!wasScrollActive && self.liveOverlayView) {
-        self.liveOverlayView.hidden = YES;
-        self.liveOverlayView.image = nil;
-    }
+    if (!wasScrollActive && self.liveOverlayView) self.liveOverlayView.hidden = YES;
+    [self scheduleLiveRefreshAfterScrollSettled];
+}
 
-    if (!wasScrollActive) {
-        if (self.liveOCRInFlight) {
-            // Ignore any in-flight OCR result that started before/during scrolling.
-            self.liveOCRGeneration++;
-            self.liveOCRInFlight = NO;
-        }
-        if (self.liveTranslateTimer && !self.liveTimerSuspendedByScroll) {
-            self.liveTranslateTimer.fireDate = [NSDate distantFuture];
-            self.liveTimerSuspendedByScroll = YES;
-        }
-    }
+- (void)beginLiveScrollInteraction {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
+
+    NSTimeInterval now = CACurrentMediaTime();
+    BOOL wasScrollActive = self.liveScrollActive;
+    self.liveScrollActive = YES;
+    self.liveScrollInteractionUntil = MAX(self.liveScrollInteractionUntil, now + 0.55);
+    self.liveScrollPendingRefresh = YES;
+    if (!wasScrollActive && self.liveOverlayView) self.liveOverlayView.hidden = YES;
     [self scheduleLiveRefreshAfterScrollSettled];
 }
 
@@ -2896,10 +2889,6 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
     if (CACurrentMediaTime() < self.liveScrollInteractionUntil) return;
     self.liveScrollActive = NO;
-    if (self.liveTranslateTimer && self.liveTimerSuspendedByScroll) {
-        self.liveTranslateTimer.fireDate = [NSDate dateWithTimeIntervalSinceNow:1.4];
-        self.liveTimerSuspendedByScroll = NO;
-    }
     if (!self.liveScrollPendingRefresh) return;
     self.liveScrollPendingRefresh = NO;
     [self requestLiveOCROverlayRefresh];
@@ -2956,7 +2945,6 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.liveScrollPendingRefresh = NO;
         self.liveScrollActive = NO;
         self.liveLastScrollSignalTime = 0;
-        self.liveTimerSuspendedByScroll = NO;
         if (self.liveScrollSettleTimer) {
             [self.liveScrollSettleTimer invalidate];
             self.liveScrollSettleTimer = nil;
@@ -3570,14 +3558,24 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 - (void)setContentOffset:(CGPoint)contentOffset {
     %orig;
     if (TOIsLiveModeSessionActiveFast()) {
-        [[TOFloatingOverlayController shared] handleScrollActivity];
+        static NSTimeInterval lastSignalTime = 0;
+        NSTimeInterval now = CACurrentMediaTime();
+        if ((now - lastSignalTime) >= 0.22) {
+            lastSignalTime = now;
+            [[TOFloatingOverlayController shared] beginLiveScrollInteraction];
+        }
     }
 }
 
 - (void)setContentOffset:(CGPoint)contentOffset animated:(BOOL)animated {
     %orig;
     if (TOIsLiveModeSessionActiveFast()) {
-        [[TOFloatingOverlayController shared] handleScrollActivity];
+        static NSTimeInterval lastAnimatedSignalTime = 0;
+        NSTimeInterval now = CACurrentMediaTime();
+        if ((now - lastAnimatedSignalTime) >= 0.22) {
+            lastAnimatedSignalTime = now;
+            [[TOFloatingOverlayController shared] beginLiveScrollInteraction];
+        }
     }
 }
 
