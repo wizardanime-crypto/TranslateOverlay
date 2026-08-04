@@ -1778,6 +1778,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, weak) UILabel *activeSizePreviewLabel;
 @property (nonatomic, assign) BOOL liveTranslateEnabled;
 @property (nonatomic, assign) NSUInteger liveTranslateGeneration;
+@property (nonatomic, strong) NSTimer *liveTranslateTimer;
+@property (nonatomic, assign) NSUInteger liveTranslateBurstGeneration;
 @property (nonatomic, strong) NSTimer *appTranslateTimer;
 @property (nonatomic, assign) NSUInteger appTranslateBurstGeneration;
 + (instancetype)shared;
@@ -1789,6 +1791,9 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)translateCurrentPageWithToast:(BOOL)showToast;
 - (void)showTranslationModeSettings;
 - (void)handleScrollActivity;
+- (void)syncLiveTranslationLoopState;
+- (void)liveTranslationTimerFired;
+- (void)scheduleLiveTranslationBurst;
 - (void)syncAppTranslationLoopState;
 - (void)appTranslationTimerFired;
 - (void)scheduleAppTranslationBurst;
@@ -2616,11 +2621,61 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     TOTranslationManager *m = [TOTranslationManager shared];
     if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
 
+    [self syncLiveTranslationLoopState];
+
     NSUInteger token = ++self.liveTranslateGeneration;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.28 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.16 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (token != self.liveTranslateGeneration) return;
         [self translateCurrentPageWithToast:NO];
+        [self scheduleLiveTranslationBurst];
     });
+}
+
+- (void)liveTranslationTimerFired {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) {
+        [self syncLiveTranslationLoopState];
+        return;
+    }
+    [self translateCurrentPageWithToast:NO];
+}
+
+- (void)scheduleLiveTranslationBurst {
+    NSUInteger token = ++self.liveTranslateBurstGeneration;
+    NSArray<NSNumber *> *steps = @[@0.0, @0.18, @0.42];
+    for (NSNumber *delay in steps) {
+        NSTimeInterval t = delay.doubleValue;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(t * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            TOTranslationManager *m = [TOTranslationManager shared];
+            if (token != self.liveTranslateBurstGeneration) return;
+            if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
+            [self translateCurrentPageWithToast:NO];
+        });
+    }
+}
+
+- (void)syncLiveTranslationLoopState {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    BOOL shouldRun = (m.translationTapMode == TOTranslationTapModeLive && self.liveTranslateEnabled);
+
+    if (shouldRun) {
+        BOOL didCreateTimer = NO;
+        if (!self.liveTranslateTimer) {
+            self.liveTranslateTimer = [NSTimer scheduledTimerWithTimeInterval:0.8
+                                                                        target:self
+                                                                      selector:@selector(liveTranslationTimerFired)
+                                                                      userInfo:nil
+                                                                       repeats:YES];
+            didCreateTimer = YES;
+        }
+        if (didCreateTimer) [self scheduleLiveTranslationBurst];
+    } else {
+        self.liveTranslateBurstGeneration++;
+        if (self.liveTranslateTimer) {
+            [self.liveTranslateTimer invalidate];
+            self.liveTranslateTimer = nil;
+        }
+    }
 }
 
 - (void)showTranslationModeSettings {
@@ -2642,6 +2697,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             m.mangaTranslationModeEnabled = (mode == TOTranslationTapModeManga);
             if (mode != TOTranslationTapModeLive) self.liveTranslateEnabled = NO;
             [m saveSettings];
+            [self syncLiveTranslationLoopState];
             [self syncAppTranslationLoopState];
 
             if (mode == TOTranslationTapModeManga) {
@@ -2790,8 +2846,10 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             break;
         case TOTranslationTapModeLive:
             self.liveTranslateEnabled = !self.liveTranslateEnabled;
+            [self syncLiveTranslationLoopState];
             if (self.liveTranslateEnabled) {
                 [self translateCurrentPageWithToast:NO];
+                [self scheduleLiveTranslationBurst];
                 [self showToast:TOUIString(@"تم تفعيل نمط الترجمه المباشره")];
             } else {
                 [self showToast:TOUIString(@"تم إيقاف نمط الترجمه المباشره")];
@@ -2886,6 +2944,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     }
 
     [self syncAppTranslationLoopState];
+    [self syncLiveTranslationLoopState];
 }
 
 @end
