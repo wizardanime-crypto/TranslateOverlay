@@ -62,6 +62,15 @@ static IMP kTOUIListSetSecondaryTextOriginalIMP = NULL;
 static IMP kTOUIListSetAttributedTextOriginalIMP = NULL;
 static IMP kTOUIListSetAttributedSecondaryTextOriginalIMP = NULL;
 
+static BOOL TOIsAppWideTranslationActive(void) {
+    Class managerClass = NSClassFromString(@"TOTranslationManager");
+    if (!managerClass || ![managerClass respondsToSelector:@selector(shared)]) return NO;
+    id m = ((id (*)(id, SEL))objc_msgSend)(managerClass, @selector(shared));
+    if (!m || ![m respondsToSelector:@selector(translationTapMode)]) return NO;
+    NSInteger mode = ((NSInteger (*)(id, SEL))objc_msgSend)(m, @selector(translationTapMode));
+    return (mode == TOTranslationTapModeNormal);
+}
+
 static NSAttributedString *TORebuildAttributedString(NSAttributedString *source, NSString *translated) {
     if (translated.length == 0) return source;
     NSDictionary *attrs = nil;
@@ -71,6 +80,7 @@ static NSAttributedString *TORebuildAttributedString(NSAttributedString *source,
 
 static void TOTranslateAndApplyTextToObject(id object, NSString *text, void (^applyBlock)(NSString *translated)) {
     if (!object || !applyBlock || !TOShouldTranslateText(text)) return;
+    if (!TOIsAppWideTranslationActive()) return;
 
     Class managerClass = NSClassFromString(@"TOTranslationManager");
     if (!managerClass || ![managerClass respondsToSelector:@selector(shared)]) return;
@@ -108,6 +118,7 @@ static void TOTranslateAndApplyTextToObject(id object, NSString *text, void (^ap
 
 static void TOTranslateAndApplyAttributedTextToObject(id object, NSAttributedString *attributedText, void (^applyBlock)(NSAttributedString *translated)) {
     if (!object || !applyBlock || attributedText.length == 0) return;
+    if (!TOIsAppWideTranslationActive()) return;
     NSString *raw = attributedText.string ?: @"";
     if (!TOShouldTranslateText(raw)) return;
 
@@ -732,6 +743,41 @@ static void TOTranslateViewTree(UIView *view) {
     }
 
     for (UIView *sub in view.subviews) TOTranslateViewTree(sub);
+}
+
+static void TOTranslateSingleViewNode(UIView *view) {
+    if (!view || view.hidden || view.alpha <= 0.01) return;
+
+    if ([view isKindOfClass:[UILabel class]]) {
+        UILabel *label = (UILabel *)view;
+        TOTranslateAndApplyTextToObject(label, label.text, ^(NSString *translated) {
+            if (![label.text isEqualToString:translated]) [label setText:translated];
+        });
+        if (label.attributedText.length > 0) {
+            TOTranslateAndApplyAttributedTextToObject(label, label.attributedText, ^(NSAttributedString *translated) {
+                if (![[label.attributedText string] isEqualToString:[translated string]]) [label setAttributedText:translated];
+            });
+        }
+    } else if ([view isKindOfClass:[UIButton class]]) {
+        UIButton *button = (UIButton *)view;
+        TOTranslateAndApplyTextToObject(button, [button titleForState:UIControlStateNormal], ^(NSString *translated) {
+            NSString *current = [button titleForState:UIControlStateNormal] ?: @"";
+            if (![current isEqualToString:translated]) [button setTitle:translated forState:UIControlStateNormal];
+        });
+    } else if ([view isKindOfClass:[UITextField class]]) {
+        UITextField *tf = (UITextField *)view;
+        TOTranslateAndApplyTextToObject(tf, tf.text, ^(NSString *translated) {
+            if (![[tf text] isEqualToString:translated]) [tf setText:translated];
+        });
+        TOTranslateAndApplyTextToObject(tf, tf.placeholder, ^(NSString *translated) {
+            if (![[tf placeholder] isEqualToString:translated]) [tf setPlaceholder:translated];
+        });
+    } else if ([view isKindOfClass:[UITextView class]]) {
+        UITextView *tv = (UITextView *)view;
+        TOTranslateAndApplyTextToObject(tv, tv.text, ^(NSString *translated) {
+            if (![[tv text] isEqualToString:translated]) [tv setText:translated];
+        });
+    }
 }
 
 static void TOTranslateBarButtonItems(NSArray<UIBarButtonItem *> *items) {
@@ -3098,8 +3144,8 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
 - (void)didMoveToWindow {
     %orig;
-    if (self.window && TOIsLikelyTextBearingView(self)) {
-        TOTranslateViewTree(self);
+    if (self.window && TOIsLikelyTextBearingView(self) && TOIsAppWideTranslationActive()) {
+        TOTranslateSingleViewNode(self);
     }
 }
 
