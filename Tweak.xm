@@ -1708,6 +1708,18 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 
     if (@available(iOS 13.0, *)) {
         VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest *request, NSError *error) {
+            BOOL cancelledOrStale = NO;
+            @synchronized (self) {
+                cancelledOrStale = (self.liveRecognitionRequest != request);
+                if (!cancelledOrStale) self.liveRecognitionRequest = nil;
+            }
+            if (cancelledOrStale) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (completion) completion(nil);
+                });
+                return;
+            }
+
             @synchronized (self) {
                 if (self.liveRecognitionRequest == request) self.liveRecognitionRequest = nil;
             }
@@ -1755,6 +1767,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
             }
 
             dispatch_group_notify(g, dispatch_get_main_queue(), ^{
+                @synchronized (self) {
+                    if (self.liveRecognitionRequest != nil) {
+                        // A newer request started; avoid rendering stale overlay.
+                        if (completion) completion(nil);
+                        return;
+                    }
+                }
                 UIImage *rendered = [self renderTranslatedTextOnImage:image items:translated];
                 if (completion) completion(rendered);
             });
