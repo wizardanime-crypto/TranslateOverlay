@@ -1891,6 +1891,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, assign) BOOL liveScrollPendingRefresh;
 @property (nonatomic, assign) BOOL liveScrollActive;
 @property (nonatomic, assign) NSTimeInterval liveLastScrollSignalTime;
+@property (nonatomic, assign) BOOL liveTimerSuspendedByScroll;
 @property (nonatomic, strong) NSTimer *appTranslateTimer;
 @property (nonatomic, assign) NSUInteger appTranslateBurstGeneration;
 + (instancetype)shared;
@@ -2814,6 +2815,11 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.liveOCRInFlight = NO;
         if (token != self.liveOCRGeneration) return;
 
+        if (self.liveScrollActive || CACurrentMediaTime() < self.liveScrollInteractionUntil) {
+            self.liveScrollPendingRefresh = YES;
+            return;
+        }
+
         TOTranslationManager *inner = [TOTranslationManager shared];
         BOOL stillLive = (inner.translationTapMode == TOTranslationTapModeLive && self.liveTranslateEnabled);
         if (!stillLive) {
@@ -2852,7 +2858,22 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     self.liveScrollActive = YES;
     self.liveScrollInteractionUntil = MAX(self.liveScrollInteractionUntil, now + 0.55);
     self.liveScrollPendingRefresh = YES;
-    if (!wasScrollActive && self.liveOverlayView) self.liveOverlayView.hidden = YES;
+    if (!wasScrollActive && self.liveOverlayView) {
+        self.liveOverlayView.hidden = YES;
+        self.liveOverlayView.image = nil;
+    }
+
+    if (!wasScrollActive) {
+        if (self.liveOCRInFlight) {
+            // Ignore any in-flight OCR result that started before/during scrolling.
+            self.liveOCRGeneration++;
+            self.liveOCRInFlight = NO;
+        }
+        if (self.liveTranslateTimer && !self.liveTimerSuspendedByScroll) {
+            self.liveTranslateTimer.fireDate = [NSDate distantFuture];
+            self.liveTimerSuspendedByScroll = YES;
+        }
+    }
     [self scheduleLiveRefreshAfterScrollSettled];
 }
 
@@ -2875,6 +2896,10 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
     if (CACurrentMediaTime() < self.liveScrollInteractionUntil) return;
     self.liveScrollActive = NO;
+    if (self.liveTranslateTimer && self.liveTimerSuspendedByScroll) {
+        self.liveTranslateTimer.fireDate = [NSDate dateWithTimeIntervalSinceNow:1.4];
+        self.liveTimerSuspendedByScroll = NO;
+    }
     if (!self.liveScrollPendingRefresh) return;
     self.liveScrollPendingRefresh = NO;
     [self requestLiveOCROverlayRefresh];
@@ -2931,6 +2956,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.liveScrollPendingRefresh = NO;
         self.liveScrollActive = NO;
         self.liveLastScrollSignalTime = 0;
+        self.liveTimerSuspendedByScroll = NO;
         if (self.liveScrollSettleTimer) {
             [self.liveScrollSettleTimer invalidate];
             self.liveScrollSettleTimer = nil;
