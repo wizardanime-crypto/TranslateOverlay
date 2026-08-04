@@ -57,6 +57,16 @@ static const void *kTOTranslateGuardKey = &kTOTranslateGuardKey;
 static const void *kTOTranslateLastTextKey = &kTOTranslateLastTextKey;
 static const void *kTOTranslateLastTargetKey = &kTOTranslateLastTargetKey;
 static IMP kTOUIListSetTextOriginalIMP = NULL;
+static IMP kTOUIListSetSecondaryTextOriginalIMP = NULL;
+static IMP kTOUIListSetAttributedTextOriginalIMP = NULL;
+static IMP kTOUIListSetAttributedSecondaryTextOriginalIMP = NULL;
+
+static NSAttributedString *TORebuildAttributedString(NSAttributedString *source, NSString *translated) {
+    if (translated.length == 0) return source;
+    NSDictionary *attrs = nil;
+    if (source.length > 0) attrs = [source attributesAtIndex:0 effectiveRange:NULL];
+    return [[NSAttributedString alloc] initWithString:translated attributes:attrs];
+}
 
 static void TOTranslateAndApplyTextToObject(id object, NSString *text, void (^applyBlock)(NSString *translated)) {
     if (!object || !applyBlock || !TOShouldTranslateText(text)) return;
@@ -89,6 +99,17 @@ static void TOTranslateAndApplyTextToObject(id object, NSString *text, void (^ap
     });
 }
 
+static void TOTranslateAndApplyAttributedTextToObject(id object, NSAttributedString *attributedText, void (^applyBlock)(NSAttributedString *translated)) {
+    if (!object || !applyBlock || attributedText.length == 0) return;
+    NSString *raw = attributedText.string ?: @"";
+    if (!TOShouldTranslateText(raw)) return;
+
+    TOTranslateAndApplyTextToObject(object, raw, ^(NSString *translated) {
+        NSAttributedString *rebuilt = TORebuildAttributedString(attributedText, translated);
+        if (rebuilt.length > 0) applyBlock(rebuilt);
+    });
+}
+
 static void TO_UIListContentConfiguration_setText(id self, SEL _cmd, NSString *text) {
     if (!kTOUIListSetTextOriginalIMP) return;
 
@@ -97,6 +118,39 @@ static void TO_UIListContentConfiguration_setText(id self, SEL _cmd, NSString *t
     if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) return;
     TOTranslateAndApplyTextToObject(self, text, ^(NSString *translated) {
         ((void (*)(id, SEL, NSString *))kTOUIListSetTextOriginalIMP)(self, @selector(setText:), translated);
+    });
+}
+
+static void TO_UIListContentConfiguration_setSecondaryText(id self, SEL _cmd, NSString *text) {
+    if (!kTOUIListSetSecondaryTextOriginalIMP) return;
+
+    ((void (*)(id, SEL, NSString *))kTOUIListSetSecondaryTextOriginalIMP)(self, _cmd, text);
+
+    if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) return;
+    TOTranslateAndApplyTextToObject(self, text, ^(NSString *translated) {
+        ((void (*)(id, SEL, NSString *))kTOUIListSetSecondaryTextOriginalIMP)(self, @selector(setSecondaryText:), translated);
+    });
+}
+
+static void TO_UIListContentConfiguration_setAttributedText(id self, SEL _cmd, NSAttributedString *text) {
+    if (!kTOUIListSetAttributedTextOriginalIMP) return;
+
+    ((void (*)(id, SEL, NSAttributedString *))kTOUIListSetAttributedTextOriginalIMP)(self, _cmd, text);
+
+    if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) return;
+    TOTranslateAndApplyAttributedTextToObject(self, text, ^(NSAttributedString *translated) {
+        ((void (*)(id, SEL, NSAttributedString *))kTOUIListSetAttributedTextOriginalIMP)(self, @selector(setAttributedText:), translated);
+    });
+}
+
+static void TO_UIListContentConfiguration_setAttributedSecondaryText(id self, SEL _cmd, NSAttributedString *text) {
+    if (!kTOUIListSetAttributedSecondaryTextOriginalIMP) return;
+
+    ((void (*)(id, SEL, NSAttributedString *))kTOUIListSetAttributedSecondaryTextOriginalIMP)(self, _cmd, text);
+
+    if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) return;
+    TOTranslateAndApplyAttributedTextToObject(self, text, ^(NSAttributedString *translated) {
+        ((void (*)(id, SEL, NSAttributedString *))kTOUIListSetAttributedSecondaryTextOriginalIMP)(self, @selector(setAttributedSecondaryText:), translated);
     });
 }
 
@@ -109,6 +163,24 @@ static void TOInstallUIListContentConfigurationHook(void) {
         if (!method) return;
         kTOUIListSetTextOriginalIMP = method_getImplementation(method);
         method_setImplementation(method, (IMP)TO_UIListContentConfiguration_setText);
+
+        Method secondaryMethod = class_getInstanceMethod(cls, @selector(setSecondaryText:));
+        if (secondaryMethod) {
+            kTOUIListSetSecondaryTextOriginalIMP = method_getImplementation(secondaryMethod);
+            method_setImplementation(secondaryMethod, (IMP)TO_UIListContentConfiguration_setSecondaryText);
+        }
+
+        Method attributedMethod = class_getInstanceMethod(cls, @selector(setAttributedText:));
+        if (attributedMethod) {
+            kTOUIListSetAttributedTextOriginalIMP = method_getImplementation(attributedMethod);
+            method_setImplementation(attributedMethod, (IMP)TO_UIListContentConfiguration_setAttributedText);
+        }
+
+        Method attributedSecondaryMethod = class_getInstanceMethod(cls, @selector(setAttributedSecondaryText:));
+        if (attributedSecondaryMethod) {
+            kTOUIListSetAttributedSecondaryTextOriginalIMP = method_getImplementation(attributedSecondaryMethod);
+            method_setImplementation(attributedSecondaryMethod, (IMP)TO_UIListContentConfiguration_setAttributedSecondaryText);
+        }
     });
 }
 
@@ -149,6 +221,32 @@ static UIWindow *TOActiveWindow(void) {
     if (app.keyWindow) return app.keyWindow;
 #pragma clang diagnostic pop
     return app.windows.firstObject;
+}
+
+static NSArray<UIWindow *> *TOVisibleWindows(void) {
+    UIApplication *app = UIApplication.sharedApplication;
+    NSMutableArray<UIWindow *> *windows = [NSMutableArray array];
+
+    if (@available(iOS 13.0, *)) {
+        for (UIScene *scene in app.connectedScenes) {
+            if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+            UIWindowScene *ws = (UIWindowScene *)scene;
+            if (ws.activationState != UISceneActivationStateForegroundActive && ws.activationState != UISceneActivationStateForegroundInactive) continue;
+            for (UIWindow *w in ws.windows) {
+                if (!w || w.hidden || w.alpha <= 0.01) continue;
+                if (![windows containsObject:w]) [windows addObject:w];
+            }
+        }
+    }
+
+    for (UIWindow *w in app.windows) {
+        if (!w || w.hidden || w.alpha <= 0.01) continue;
+        if (![windows containsObject:w]) [windows addObject:w];
+    }
+
+    UIWindow *active = TOActiveWindow();
+    if (active && ![windows containsObject:active]) [windows addObject:active];
+    return windows;
 }
 
 static UIViewController *TOTopViewController(void) {
@@ -541,16 +639,32 @@ static void TOTranslateViewTree(UIView *view) {
         [[TOTranslationManager shared] translateText:label.text completion:^(NSString *translated) {
             if (translated.length > 0) label.text = translated;
         }];
+        if (label.attributedText.length > 0) {
+            TOTranslateAndApplyAttributedTextToObject(label, label.attributedText, ^(NSAttributedString *translated) {
+                label.attributedText = translated;
+            });
+        }
     } else if ([view isKindOfClass:[UIButton class]]) {
         UIButton *button = (UIButton *)view;
         [[TOTranslationManager shared] translateText:[button titleForState:UIControlStateNormal] completion:^(NSString *translated) {
             if (translated.length > 0) [button setTitle:translated forState:UIControlStateNormal];
         }];
+        NSAttributedString *attrNormal = [button attributedTitleForState:UIControlStateNormal];
+        if (attrNormal.length > 0) {
+            TOTranslateAndApplyAttributedTextToObject(button, attrNormal, ^(NSAttributedString *translated) {
+                [button setAttributedTitle:translated forState:UIControlStateNormal];
+            });
+        }
     } else if ([view isKindOfClass:[UITextField class]]) {
         UITextField *tf = (UITextField *)view;
         [[TOTranslationManager shared] translateText:tf.text completion:^(NSString *translated) {
             if (translated.length > 0) tf.text = translated;
         }];
+        if (tf.attributedText.length > 0) {
+            TOTranslateAndApplyAttributedTextToObject(tf, tf.attributedText, ^(NSAttributedString *translated) {
+                tf.attributedText = translated;
+            });
+        }
         [[TOTranslationManager shared] translateText:tf.placeholder completion:^(NSString *translated) {
             if (translated.length > 0) tf.placeholder = translated;
         }];
@@ -565,6 +679,11 @@ static void TOTranslateViewTree(UIView *view) {
         [[TOTranslationManager shared] translateText:tv.text completion:^(NSString *translated) {
             if (translated.length > 0) tv.text = translated;
         }];
+        if (tv.attributedText.length > 0) {
+            TOTranslateAndApplyAttributedTextToObject(tv, tv.attributedText, ^(NSAttributedString *translated) {
+                tv.attributedText = translated;
+            });
+        }
     } else if ([view isKindOfClass:[UISegmentedControl class]]) {
         UISegmentedControl *seg = (UISegmentedControl *)view;
         for (NSInteger i = 0; i < (NSInteger)seg.numberOfSegments; i++) {
@@ -580,6 +699,18 @@ static void TOTranslateViewTree(UIView *view) {
         NSString *a11y = view.accessibilityLabel;
         [[TOTranslationManager shared] translateText:a11y completion:^(NSString *translated) {
             if (translated.length > 0) view.accessibilityLabel = translated;
+        }];
+    }
+    if (view.accessibilityValue.length > 0) {
+        NSString *a11yValue = view.accessibilityValue;
+        [[TOTranslationManager shared] translateText:a11yValue completion:^(NSString *translated) {
+            if (translated.length > 0) view.accessibilityValue = translated;
+        }];
+    }
+    if (view.accessibilityHint.length > 0) {
+        NSString *a11yHint = view.accessibilityHint;
+        [[TOTranslationManager shared] translateText:a11yHint completion:^(NSString *translated) {
+            if (translated.length > 0) view.accessibilityHint = translated;
         }];
     }
 
@@ -607,6 +738,9 @@ static void TOTranslateControllerMetadata(UIViewController *controller) {
         TOTranslateAndApplyTextToObject(nav, nav.title, ^(NSString *translated) {
             if (![[nav title] isEqualToString:translated]) [nav setTitle:translated];
         });
+        TOTranslateAndApplyTextToObject(nav, nav.prompt, ^(NSString *translated) {
+            if (![[nav prompt] isEqualToString:translated]) [nav setPrompt:translated];
+        });
         TOTranslateBarButtonItems(nav.leftBarButtonItems ?: @[]);
         TOTranslateBarButtonItems(nav.rightBarButtonItems ?: @[]);
         if (nav.backBarButtonItem) TOTranslateBarButtonItems(@[nav.backBarButtonItem]);
@@ -629,6 +763,21 @@ static void TOTranslateControllerMetadata(UIViewController *controller) {
     }
     for (UIViewController *child in controller.childViewControllers) TOTranslateControllerMetadata(child);
     if (controller.presentedViewController) TOTranslateControllerMetadata(controller.presentedViewController);
+
+    if ([controller isKindOfClass:[UIAlertController class]]) {
+        UIAlertController *alert = (UIAlertController *)controller;
+        for (UIAlertAction *action in alert.actions) {
+            NSString *title = action.title;
+            if (title.length == 0) continue;
+            [[TOTranslationManager shared] translateText:title completion:^(NSString *translated) {
+                if (translated.length == 0) return;
+                @try {
+                    [action setValue:translated forKey:@"title"];
+                } @catch (__unused NSException *e) {
+                }
+            }];
+        }
+    }
 }
 
 static void TOTranslateControllerTree(UIViewController *controller) {
@@ -648,18 +797,21 @@ static void TOTranslateControllerTree(UIViewController *controller) {
 
 static void TOForceImmediateUILocalizationRefresh(void) {
     dispatch_async(dispatch_get_main_queue(), ^{
-        UIWindow *w = TOActiveWindow();
-        if (!w) return;
+        NSArray<UIWindow *> *windows = TOVisibleWindows();
+        if (windows.count == 0) return;
 
-        TOTranslateViewTree(w);
-        if (w.rootViewController) TOTranslateControllerTree(w.rootViewController);
+        for (UIWindow *w in windows) {
+            TOTranslateViewTree(w);
+            if (w.rootViewController) TOTranslateControllerTree(w.rootViewController);
+        }
 
         // Run a second pass right after action-sheet dismissal completes.
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.28 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            UIWindow *w2 = TOActiveWindow();
-            if (!w2) return;
-            TOTranslateViewTree(w2);
-            if (w2.rootViewController) TOTranslateControllerTree(w2.rootViewController);
+            NSArray<UIWindow *> *windows2 = TOVisibleWindows();
+            for (UIWindow *w2 in windows2) {
+                TOTranslateViewTree(w2);
+                if (w2.rootViewController) TOTranslateControllerTree(w2.rootViewController);
+            }
         });
     });
 }
@@ -1495,6 +1647,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, assign) BOOL liveTranslateEnabled;
 @property (nonatomic, assign) NSUInteger liveTranslateGeneration;
 @property (nonatomic, strong) NSTimer *appTranslateTimer;
+@property (nonatomic, assign) NSUInteger appTranslateBurstGeneration;
 + (instancetype)shared;
 - (void)installIfPossible;
 - (void)showToast:(NSString *)message;
@@ -1504,6 +1657,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)handleScrollActivity;
 - (void)syncAppTranslationLoopState;
 - (void)appTranslationTimerFired;
+- (void)scheduleAppTranslationBurst;
 - (void)showOCRAppearanceSettings;
 - (void)showOCRTextSizePicker;
 - (void)showLanguagePicker:(BOOL)isSource;
@@ -2381,6 +2535,20 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     TOForceImmediateUILocalizationRefresh();
 }
 
+- (void)scheduleAppTranslationBurst {
+    NSUInteger token = ++self.appTranslateBurstGeneration;
+    NSArray<NSNumber *> *steps = @[@0.0, @0.08, @0.20, @0.38, @0.65, @1.0];
+    for (NSNumber *delay in steps) {
+        NSTimeInterval t = delay.doubleValue;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(t * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            TOTranslationManager *m = [TOTranslationManager shared];
+            if (token != self.appTranslateBurstGeneration) return;
+            if (m.translationTapMode != TOTranslationTapModeNormal) return;
+            TOForceImmediateUILocalizationRefresh();
+        });
+    }
+}
+
 - (void)syncAppTranslationLoopState {
     TOTranslationManager *m = [TOTranslationManager shared];
     BOOL shouldRun = (m.translationTapMode == TOTranslationTapModeNormal);
@@ -2393,8 +2561,10 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                                                                      userInfo:nil
                                                                       repeats:YES];
         }
+        [self scheduleAppTranslationBurst];
         TOForceImmediateUILocalizationRefresh();
     } else {
+        self.appTranslateBurstGeneration++;
         if (self.appTranslateTimer) {
             [self.appTranslateTimer invalidate];
             self.appTranslateTimer = nil;
@@ -2599,6 +2769,20 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     });
 }
 
+- (void)setAttributedText:(NSAttributedString *)text {
+    if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) {
+        %orig(text);
+        return;
+    }
+
+    %orig(text);
+    TOTranslateAndApplyAttributedTextToObject(self, text, ^(NSAttributedString *translated) {
+        if (![[self.attributedText string] isEqualToString:[translated string]]) {
+            [self setAttributedText:translated];
+        }
+    });
+}
+
 %end
 
 %hook UIButton
@@ -2618,6 +2802,21 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     });
 }
 
+- (void)setAttributedTitle:(NSAttributedString *)title forState:(UIControlState)state {
+    if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) {
+        %orig(title, state);
+        return;
+    }
+
+    %orig(title, state);
+    TOTranslateAndApplyAttributedTextToObject(self, title, ^(NSAttributedString *translated) {
+        NSString *current = [[self attributedTitleForState:state] string] ?: @"";
+        if (![current isEqualToString:translated.string ?: @""]) {
+            [self setAttributedTitle:translated forState:state];
+        }
+    });
+}
+
 %end
 
 %hook UINavigationItem
@@ -2632,6 +2831,20 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     TOTranslateAndApplyTextToObject(self, title, ^(NSString *translated) {
         if (![[self title] isEqualToString:translated]) {
             [self setTitle:translated];
+        }
+    });
+}
+
+- (void)setPrompt:(NSString *)prompt {
+    if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) {
+        %orig(prompt);
+        return;
+    }
+
+    %orig(prompt);
+    TOTranslateAndApplyTextToObject(self, prompt, ^(NSString *translated) {
+        if (![[self prompt] isEqualToString:translated]) {
+            [self setPrompt:translated];
         }
     });
 }
@@ -2687,6 +2900,74 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         NSString *current = [self placeholder] ?: @"";
         if (![current isEqualToString:translated]) {
             [self setPlaceholder:translated];
+        }
+    });
+}
+
+- (void)setPrompt:(NSString *)prompt {
+    if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) {
+        %orig(prompt);
+        return;
+    }
+
+    %orig(prompt);
+    TOTranslateAndApplyTextToObject(self, prompt, ^(NSString *translated) {
+        NSString *current = [self prompt] ?: @"";
+        if (![current isEqualToString:translated]) {
+            [self setPrompt:translated];
+        }
+    });
+}
+
+%end
+
+%hook UITextField
+
+- (void)setAttributedText:(NSAttributedString *)text {
+    if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) {
+        %orig(text);
+        return;
+    }
+
+    %orig(text);
+    TOTranslateAndApplyAttributedTextToObject(self, text, ^(NSAttributedString *translated) {
+        NSString *current = self.attributedText.string ?: @"";
+        if (![current isEqualToString:translated.string ?: @""]) {
+            [self setAttributedText:translated];
+        }
+    });
+}
+
+- (void)setAttributedPlaceholder:(NSAttributedString *)placeholder {
+    if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) {
+        %orig(placeholder);
+        return;
+    }
+
+    %orig(placeholder);
+    TOTranslateAndApplyAttributedTextToObject(self, placeholder, ^(NSAttributedString *translated) {
+        NSString *current = self.attributedPlaceholder.string ?: @"";
+        if (![current isEqualToString:translated.string ?: @""]) {
+            [self setAttributedPlaceholder:translated];
+        }
+    });
+}
+
+%end
+
+%hook UITextView
+
+- (void)setAttributedText:(NSAttributedString *)text {
+    if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) {
+        %orig(text);
+        return;
+    }
+
+    %orig(text);
+    TOTranslateAndApplyAttributedTextToObject(self, text, ^(NSAttributedString *translated) {
+        NSString *current = self.attributedText.string ?: @"";
+        if (![current isEqualToString:translated.string ?: @""]) {
+            [self setAttributedText:translated];
         }
     });
 }
@@ -2758,9 +3039,24 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
 %hook UIViewController
 
+- (void)setTitle:(NSString *)title {
+    if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) {
+        %orig(title);
+        return;
+    }
+
+    %orig(title);
+    TOTranslateAndApplyTextToObject(self, title, ^(NSString *translated) {
+        if (![[self title] isEqualToString:translated]) {
+            [self setTitle:translated];
+        }
+    });
+}
+
 - (void)viewDidAppear:(BOOL)animated {
     %orig(animated);
     TOTranslateControllerTree(self);
+    [[TOFloatingOverlayController shared] syncAppTranslationLoopState];
 }
 
 %end
@@ -2771,6 +3067,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     %orig;
     if (self.window) {
         TOTranslateViewTree(self);
+        [[TOFloatingOverlayController shared] syncAppTranslationLoopState];
     }
 }
 
