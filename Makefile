@@ -9,7 +9,8 @@ TWEAK_NAME = TranslateOverlay
 
 TranslateOverlay_FILES = Tweak.xm
 TranslateOverlay_FRAMEWORKS = UIKit Foundation Vision NaturalLanguage QuartzCore
-TranslateOverlay_CFLAGS = -fobjc-arc
+TranslateOverlay_CFLAGS = -fobjc-arc -Oz -ffunction-sections -fdata-sections
+TranslateOverlay_LDFLAGS = -Wl,-dead_strip -Wl,-x
 
 include $(THEOS_MAKE_PATH)/tweak.mk
 include $(THEOS_MAKE_PATH)/aggregate.mk
