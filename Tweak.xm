@@ -110,6 +110,8 @@ static void TOTranslateAndApplyTextToObject(id object, NSString *text, void (^ap
     ((void (*)(id, SEL, NSString *, id))objc_msgSend)(m, @selector(translateText:completion:), text, ^(NSString *translated) {
         id strongObject = weakObject;
         if (!strongObject || translated.length == 0) return;
+        // Ignore fallback/no-op responses that equal the original source text to avoid visual toggling.
+        if ([translated isEqualToString:text]) return;
         objc_setAssociatedObject(strongObject, kTOTranslateGuardKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         applyBlock(translated);
         objc_setAssociatedObject(strongObject, kTOTranslateGuardKey, @NO, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
