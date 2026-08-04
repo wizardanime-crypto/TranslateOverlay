@@ -1880,6 +1880,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, assign) NSTimeInterval liveLastUIRefreshTime;
 @property (nonatomic, assign) NSTimeInterval liveLastOCRRefreshTime;
 @property (nonatomic, strong) NSTimer *liveScrollSettleTimer;
+@property (nonatomic, assign) BOOL liveScrollPendingRefresh;
 @property (nonatomic, strong) NSTimer *appTranslateTimer;
 @property (nonatomic, assign) NSUInteger appTranslateBurstGeneration;
 + (instancetype)shared;
@@ -2717,7 +2718,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     NSTimeInterval now = CACurrentMediaTime();
     if (m.translationTapMode == TOTranslationTapModeLive && self.liveTranslateEnabled) {
         if (now < self.liveScrollInteractionUntil) return;
-        if ((now - self.liveLastUIRefreshTime) < 0.55) return;
+        if ((now - self.liveLastUIRefreshTime) < 0.85) return;
         self.liveLastUIRefreshTime = now;
     }
 
@@ -2753,7 +2754,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.liveOCRNeedsRefresh = YES;
         return;
     }
-    if ((now - self.liveLastOCRRefreshTime) < 0.9) {
+    if ((now - self.liveLastOCRRefreshTime) < 1.35) {
         self.liveOCRNeedsRefresh = YES;
         return;
     }
@@ -2826,17 +2827,18 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     TOTranslationManager *m = [TOTranslationManager shared];
     if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
 
-    [self syncLiveTranslationLoopState];
-    self.liveScrollInteractionUntil = MAX(self.liveScrollInteractionUntil, CACurrentMediaTime() + 0.75);
+    self.liveScrollInteractionUntil = MAX(self.liveScrollInteractionUntil, CACurrentMediaTime() + 0.95);
+    self.liveScrollPendingRefresh = YES;
     [self scheduleLiveRefreshAfterScrollSettled];
 }
 
 - (void)scheduleLiveRefreshAfterScrollSettled {
+    NSDate *targetDate = [NSDate dateWithTimeIntervalSinceNow:1.0];
     if (self.liveScrollSettleTimer) {
-        [self.liveScrollSettleTimer invalidate];
-        self.liveScrollSettleTimer = nil;
+        self.liveScrollSettleTimer.fireDate = targetDate;
+        return;
     }
-    self.liveScrollSettleTimer = [NSTimer scheduledTimerWithTimeInterval:0.8
+    self.liveScrollSettleTimer = [NSTimer scheduledTimerWithTimeInterval:1.0
                                                                    target:self
                                                                  selector:@selector(liveScrollSettledTimerFired)
                                                                  userInfo:nil
@@ -2848,6 +2850,8 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     TOTranslationManager *m = [TOTranslationManager shared];
     if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
     if (CACurrentMediaTime() < self.liveScrollInteractionUntil) return;
+    if (!self.liveScrollPendingRefresh) return;
+    self.liveScrollPendingRefresh = NO;
     [self requestLiveOCROverlayRefresh];
 }
 
@@ -2857,13 +2861,14 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [self syncLiveTranslationLoopState];
         return;
     }
+    if (self.liveScrollSettleTimer) return;
     if (CACurrentMediaTime() < self.liveScrollInteractionUntil) return;
     [self requestLiveOCROverlayRefresh];
 }
 
 - (void)scheduleLiveTranslationBurst {
     NSUInteger token = ++self.liveTranslateBurstGeneration;
-    NSArray<NSNumber *> *steps = @[@0.0, @0.5];
+    NSArray<NSNumber *> *steps = @[@0.0, @0.75];
     for (NSNumber *delay in steps) {
         NSTimeInterval t = delay.doubleValue;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(t * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -2883,7 +2888,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     if (shouldRun) {
         BOOL didCreateTimer = NO;
         if (!self.liveTranslateTimer) {
-                        self.liveTranslateTimer = [NSTimer scheduledTimerWithTimeInterval:1.25
+                        self.liveTranslateTimer = [NSTimer scheduledTimerWithTimeInterval:2.1
                                                                         target:self
                                                                       selector:@selector(liveTranslationTimerFired)
                                                                       userInfo:nil
@@ -2896,6 +2901,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.liveOCRGeneration++;
         self.liveOCRNeedsRefresh = NO;
         self.liveOCRInFlight = NO;
+        self.liveScrollPendingRefresh = NO;
         if (self.liveScrollSettleTimer) {
             [self.liveScrollSettleTimer invalidate];
             self.liveScrollSettleTimer = nil;
