@@ -81,13 +81,6 @@ static void TOTranslateAndApplyTextToObject(id object, NSString *text, void (^ap
             target = dynamicTarget;
         }
     }
-    NSString *lastText = objc_getAssociatedObject(object, kTOTranslateLastTextKey);
-    NSString *lastTarget = objc_getAssociatedObject(object, kTOTranslateLastTargetKey);
-    if ([lastText isEqualToString:text] && [lastTarget isEqualToString:target]) return;
-
-    objc_setAssociatedObject(object, kTOTranslateLastTextKey, text, OBJC_ASSOCIATION_COPY_NONATOMIC);
-    objc_setAssociatedObject(object, kTOTranslateLastTargetKey, target, OBJC_ASSOCIATION_COPY_NONATOMIC);
-
     __weak id weakObject = object;
     if (![m respondsToSelector:@selector(translateText:completion:)]) return;
     ((void (*)(id, SEL, NSString *, id))objc_msgSend)(m, @selector(translateText:completion:), text, ^(NSString *translated) {
@@ -460,7 +453,12 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     NSString *target = self.targetLanguage ?: @"ar";
     NSString *cacheKey = [NSString stringWithFormat:@"%@|%@|%@", source, target, preparedText];
     NSString *cached = [self.cache objectForKey:cacheKey] ?: self.persistentCache[cacheKey];
-    if (cached.length > 0) {
+    BOOL cachedLooksUntranslated = (cached.length > 0 && [cached isEqualToString:preparedText]);
+    if (cachedLooksUntranslated) {
+        [self.cache removeObjectForKey:cacheKey];
+        [self.persistentCache removeObjectForKey:cacheKey];
+    }
+    if (cached.length > 0 && !cachedLooksUntranslated) {
         if (completion) completion(cached);
         return;
     }
@@ -481,6 +479,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 
     [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSString *result = inputText;
+        BOOL didGetValidTranslationPayload = NO;
         if (!error && data.length > 0) {
             id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
             if ([json isKindOfClass:[NSArray class]]) {
@@ -495,13 +494,17 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
                             }
                         }
                     }
-                    if (combined.length > 0) result = combined;
+                    if (combined.length > 0) {
+                        didGetValidTranslationPayload = YES;
+                        result = combined;
+                    }
                 }
             }
         }
 
-        [self.cache setObject:result forKey:cacheKey];
-        if (result.length > 0) {
+        // Cache only validated translation payloads; avoid poisoning cache with original text on network/parse failures.
+        if (didGetValidTranslationPayload && result.length > 0) {
+            [self.cache setObject:result forKey:cacheKey];
             self.persistentCache[cacheKey] = result;
             if (self.persistentCache.count > 500) {
                 NSString *first = self.persistentCache.allKeys.firstObject;
