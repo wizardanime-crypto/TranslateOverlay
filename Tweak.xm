@@ -62,13 +62,21 @@ static IMP kTOUIListSetSecondaryTextOriginalIMP = NULL;
 static IMP kTOUIListSetAttributedTextOriginalIMP = NULL;
 static IMP kTOUIListSetAttributedSecondaryTextOriginalIMP = NULL;
 
-static BOOL TOIsAppWideTranslationActive(void) {
+static BOOL TOIsUITranslationPipelineEnabled(void) {
     Class managerClass = NSClassFromString(@"TOTranslationManager");
     if (!managerClass || ![managerClass respondsToSelector:@selector(shared)]) return NO;
     id m = ((id (*)(id, SEL))objc_msgSend)(managerClass, @selector(shared));
     if (!m || ![m respondsToSelector:@selector(translationTapMode)]) return NO;
     NSInteger mode = ((NSInteger (*)(id, SEL))objc_msgSend)(m, @selector(translationTapMode));
-    return (mode == TOTranslationTapModeNormal);
+    if (mode == TOTranslationTapModeNormal) return YES;
+    if (mode == TOTranslationTapModeLive) {
+        Class overlayClass = NSClassFromString(@"TOFloatingOverlayController");
+        if (!overlayClass || ![overlayClass respondsToSelector:@selector(shared)]) return NO;
+        id overlay = ((id (*)(id, SEL))objc_msgSend)(overlayClass, @selector(shared));
+        if (!overlay || ![overlay respondsToSelector:@selector(liveTranslateEnabled)]) return NO;
+        return ((BOOL (*)(id, SEL))objc_msgSend)(overlay, @selector(liveTranslateEnabled));
+    }
+    return NO;
 }
 
 static NSAttributedString *TORebuildAttributedString(NSAttributedString *source, NSString *translated) {
@@ -80,7 +88,7 @@ static NSAttributedString *TORebuildAttributedString(NSAttributedString *source,
 
 static void TOTranslateAndApplyTextToObject(id object, NSString *text, void (^applyBlock)(NSString *translated)) {
     if (!object || !applyBlock || !TOShouldTranslateText(text)) return;
-    if (!TOIsAppWideTranslationActive()) return;
+    if (!TOIsUITranslationPipelineEnabled()) return;
 
     Class managerClass = NSClassFromString(@"TOTranslationManager");
     if (!managerClass || ![managerClass respondsToSelector:@selector(shared)]) return;
@@ -120,7 +128,7 @@ static void TOTranslateAndApplyTextToObject(id object, NSString *text, void (^ap
 
 static void TOTranslateAndApplyAttributedTextToObject(id object, NSAttributedString *attributedText, void (^applyBlock)(NSAttributedString *translated)) {
     if (!object || !applyBlock || attributedText.length == 0) return;
-    if (!TOIsAppWideTranslationActive()) return;
+    if (!TOIsUITranslationPipelineEnabled()) return;
     NSString *raw = attributedText.string ?: @"";
     if (!TOShouldTranslateText(raw)) return;
 
@@ -1777,6 +1785,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)showToast:(NSString *)message;
 - (void)startOCR;
 - (void)startOCRForMangaMode:(BOOL)useMangaMode;
+- (void)translateCurrentPage;
+- (void)translateCurrentPageWithToast:(BOOL)showToast;
 - (void)showTranslationModeSettings;
 - (void)handleScrollActivity;
 - (void)syncAppTranslationLoopState;
@@ -2593,12 +2603,13 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     [self startOCRForMangaMode:(m.translationTapMode == TOTranslationTapModeManga)];
 }
 
+- (void)translateCurrentPageWithToast:(BOOL)showToast {
+    TOForceImmediateUILocalizationRefresh();
+    if (showToast) [self showToast:@"تمت محاولة الترجمة"];
+}
+
 - (void)translateCurrentPage {
-    UIWindow *w = self.attachedWindow ?: TOActiveWindow();
-    if (!w) return;
-    TOTranslateViewTree(w);
-    if (w.rootViewController) TOTranslateViewTree(w.rootViewController.view);
-    [self showToast:@"تمت محاولة الترجمة"];
+    [self translateCurrentPageWithToast:YES];
 }
 
 - (void)handleScrollActivity {
@@ -2608,7 +2619,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     NSUInteger token = ++self.liveTranslateGeneration;
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.28 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (token != self.liveTranslateGeneration) return;
-        [self translateCurrentPage];
+        [self translateCurrentPageWithToast:NO];
     });
 }
 
@@ -2780,7 +2791,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         case TOTranslationTapModeLive:
             self.liveTranslateEnabled = !self.liveTranslateEnabled;
             if (self.liveTranslateEnabled) {
-                [self translateCurrentPage];
+                [self translateCurrentPageWithToast:NO];
                 [self showToast:TOUIString(@"تم تفعيل نمط الترجمه المباشره")];
             } else {
                 [self showToast:TOUIString(@"تم إيقاف نمط الترجمه المباشره")];
@@ -3191,7 +3202,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
 - (void)didMoveToWindow {
     %orig;
-    if (self.window && TOIsLikelyTextBearingView(self) && TOIsAppWideTranslationActive()) {
+    if (self.window && TOIsLikelyTextBearingView(self) && TOIsUITranslationPipelineEnabled()) {
         TOTranslateSingleViewNode(self);
     }
 }
