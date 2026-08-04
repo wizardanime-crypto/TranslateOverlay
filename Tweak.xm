@@ -316,6 +316,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 @property (nonatomic, copy) NSString *targetLanguage;
 @property (nonatomic, strong) NSCache<NSString *, NSString *> *cache;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *persistentCache;
+@property (nonatomic, strong) NSMutableSet<NSString *> *inFlightTranslationKeys;
 
 @property (nonatomic, assign) CGFloat ocrTextScale;
 @property (nonatomic, assign) BOOL ocrAutoColorEnabled;
@@ -349,6 +350,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         m = [TOTranslationManager new];
         m.cache = [NSCache new];
         m.persistentCache = [NSMutableDictionary new];
+        m.inFlightTranslationKeys = [NSMutableSet new];
         [m loadSettings];
     });
     return m;
@@ -361,8 +363,10 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 
     NSDictionary *stored = [d dictionaryForKey:kTOTranslationCacheKey];
     if ([stored isKindOfClass:[NSDictionary class]]) {
-        [self.persistentCache removeAllObjects];
-        [self.persistentCache addEntriesFromDictionary:stored];
+        @synchronized (self) {
+            [self.persistentCache removeAllObjects];
+            [self.persistentCache addEntriesFromDictionary:stored];
+        }
     }
 
     CGFloat scale = [d doubleForKey:kTOOCRTextScaleKey];
@@ -409,7 +413,11 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     [d setObject:self.sourceLanguage ?: @"auto" forKey:kTOSourceLanguageKey];
     [d setObject:self.targetLanguage ?: @"ar" forKey:kTOTargetLanguageKey];
-    [d setObject:self.persistentCache ?: @{} forKey:kTOTranslationCacheKey];
+    NSDictionary *cacheSnapshot = nil;
+    @synchronized (self) {
+        cacheSnapshot = [self.persistentCache copy] ?: @{};
+    }
+    [d setObject:cacheSnapshot forKey:kTOTranslationCacheKey];
 
     [d setDouble:self.ocrTextScale forKey:kTOOCRTextScaleKey];
     [d setBool:self.ocrAutoColorEnabled forKey:kTOOCRTextAutoColorEnabledKey];
@@ -477,15 +485,30 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     NSString *source = self.sourceLanguage ?: @"auto";
     NSString *target = self.targetLanguage ?: @"ar";
     NSString *cacheKey = [NSString stringWithFormat:@"%@|%@|%@", source, target, preparedText];
-    NSString *cached = [self.cache objectForKey:cacheKey] ?: self.persistentCache[cacheKey];
+    NSString *cached = [self.cache objectForKey:cacheKey];
+    if (cached.length == 0) {
+        @synchronized (self) {
+            cached = self.persistentCache[cacheKey];
+        }
+    }
     BOOL cachedLooksUntranslated = (cached.length > 0 && [cached isEqualToString:preparedText]);
     if (cachedLooksUntranslated) {
         [self.cache removeObjectForKey:cacheKey];
-        [self.persistentCache removeObjectForKey:cacheKey];
+        @synchronized (self) {
+            [self.persistentCache removeObjectForKey:cacheKey];
+        }
     }
     if (cached.length > 0 && !cachedLooksUntranslated) {
         if (completion) completion(cached);
         return;
+    }
+
+    @synchronized (self) {
+        if ([self.inFlightTranslationKeys containsObject:cacheKey]) {
+            if (completion) completion(inputText);
+            return;
+        }
+        [self.inFlightTranslationKeys addObject:cacheKey];
     }
 
     NSString *sl = source;
@@ -498,6 +521,9 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     NSString *u = [NSString stringWithFormat:@"https://translate.googleapis.com/translate_a/single?client=gtx&sl=%@&tl=%@&dt=t&q=%@", sl, target, q];
     NSURL *url = [NSURL URLWithString:u];
     if (!url) {
+        @synchronized (self) {
+            [self.inFlightTranslationKeys removeObject:cacheKey];
+        }
         if (completion) completion(inputText);
         return;
     }
@@ -530,12 +556,18 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         // Cache only validated translation payloads; avoid poisoning cache with original text on network/parse failures.
         if (didGetValidTranslationPayload && result.length > 0) {
             [self.cache setObject:result forKey:cacheKey];
-            self.persistentCache[cacheKey] = result;
-            if (self.persistentCache.count > 500) {
-                NSString *first = self.persistentCache.allKeys.firstObject;
-                if (first) [self.persistentCache removeObjectForKey:first];
+            @synchronized (self) {
+                self.persistentCache[cacheKey] = result;
+                if (self.persistentCache.count > 500) {
+                    NSString *first = self.persistentCache.allKeys.firstObject;
+                    if (first) [self.persistentCache removeObjectForKey:first];
+                }
             }
             [self saveSettings];
+        }
+
+        @synchronized (self) {
+            [self.inFlightTranslationKeys removeObject:cacheKey];
         }
 
         dispatch_async(dispatch_get_main_queue(), ^{
@@ -554,7 +586,12 @@ static NSString *TOUIString(NSString *text) {
     if ([target isEqualToString:@"ar"]) return text;
 
     NSString *key = [NSString stringWithFormat:@"ar|%@|%@", target, text];
-    NSString *cached = [m.cache objectForKey:key] ?: m.persistentCache[key];
+    NSString *cached = [m.cache objectForKey:key];
+    if (cached.length == 0) {
+        @synchronized (m) {
+            cached = m.persistentCache[key];
+        }
+    }
     if (cached.length > 0) return cached;
 
     static NSMutableDictionary<NSString *, NSNumber *> *inFlight;
@@ -601,10 +638,12 @@ static NSString *TOUIString(NSString *text) {
 
         if (translated.length > 0) {
             [m.cache setObject:translated forKey:key];
-            m.persistentCache[key] = translated;
-            if (m.persistentCache.count > 800) {
-                NSString *first = m.persistentCache.allKeys.firstObject;
-                if (first) [m.persistentCache removeObjectForKey:first];
+            @synchronized (m) {
+                m.persistentCache[key] = translated;
+                if (m.persistentCache.count > 800) {
+                    NSString *first = m.persistentCache.allKeys.firstObject;
+                    if (first) [m.persistentCache removeObjectForKey:first];
+                }
             }
             [m saveSettings];
         }
@@ -642,7 +681,13 @@ static void TOWarmupUILocalization(void) {
 
     for (NSString *text in phrases) {
         NSString *key = [NSString stringWithFormat:@"ar|%@|%@", target, text];
-        if ([m.cache objectForKey:key] || m.persistentCache[key]) continue;
+        BOOL hasCached = ([m.cache objectForKey:key] != nil);
+        if (!hasCached) {
+            @synchronized (m) {
+                hasCached = (m.persistentCache[key] != nil);
+            }
+        }
+        if (hasCached) continue;
         (void)TOUIString(text);
     }
 }
