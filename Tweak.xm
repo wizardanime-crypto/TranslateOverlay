@@ -30,6 +30,7 @@ static NSString * const kTOOCRBackgroundAlphaKey = @"to_ocr_background_alpha";
 static NSString * const kTOOCRBackgroundHueKey = @"to_ocr_background_hue";
 static NSString * const kTOOCRBackgroundSaturationKey = @"to_ocr_background_saturation";
 static NSString * const kTOOCRBackgroundBrightnessKey = @"to_ocr_background_brightness";
+static NSString * const kTOLiveTouchResumeDelayKey = @"to_live_touch_resume_delay";
 
 @class TOTranslationManager;
 
@@ -55,6 +56,39 @@ static void TOUpdateTranslationModeSnapshot(NSInteger mode, BOOL liveEnabled) {
 
 static BOOL TOIsLiveModeSessionActiveFast(void) {
     return (gTOTranslationTapModeSnapshot == TOTranslationTapModeLive) && gTOLiveTranslateEnabledSnapshot;
+}
+
+static NSString *TOCollapseWhitespace(NSString *text) {
+    if (text.length == 0) return @"";
+    NSArray<NSString *> *parts = [text componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSMutableArray<NSString *> *words = [NSMutableArray arrayWithCapacity:parts.count];
+    for (NSString *part in parts) {
+        if (part.length > 0) [words addObject:part];
+    }
+    return [words componentsJoinedByString:@" "];
+}
+
+static NSString *TOPrepareLiveOCRSourceText(NSString *text) {
+    if (text.length == 0) return @"";
+
+    NSString *normalized = [[text stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"]
+                            stringByReplacingOccurrencesOfString:@"\r" withString:@"\n"];
+    normalized = [normalized stringByReplacingOccurrencesOfString:@"-\n" withString:@""];
+    normalized = [normalized stringByReplacingOccurrencesOfString:@"\n" withString:@" "];
+    normalized = [normalized stringByReplacingOccurrencesOfString:@"\t" withString:@" "];
+    normalized = [normalized stringByReplacingOccurrencesOfString:@"…" withString:@"..."];
+    normalized = [normalized stringByReplacingOccurrencesOfString:@"“" withString:@"\""];
+    normalized = [normalized stringByReplacingOccurrencesOfString:@"”" withString:@"\""];
+    normalized = [normalized stringByReplacingOccurrencesOfString:@"’" withString:@"'"];
+    normalized = TOCollapseWhitespace(normalized);
+    normalized = [normalized stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+
+    while ([normalized containsString:@" ,"]) normalized = [normalized stringByReplacingOccurrencesOfString:@" ," withString:@","];
+    while ([normalized containsString:@" ."]) normalized = [normalized stringByReplacingOccurrencesOfString:@" ." withString:@"."];
+    while ([normalized containsString:@" !"]) normalized = [normalized stringByReplacingOccurrencesOfString:@" !" withString:@"!"];
+    while ([normalized containsString:@" ?"]) normalized = [normalized stringByReplacingOccurrencesOfString:@" ?" withString:@"?"];
+
+    return normalized;
 }
 
 static NSString *TONormalizedLocaleIdentifier(NSString *languageCode) {
@@ -343,6 +377,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 @property (nonatomic, assign) CGFloat ocrBackgroundHue;
 @property (nonatomic, assign) CGFloat ocrBackgroundSaturation;
 @property (nonatomic, assign) CGFloat ocrBackgroundBrightness;
+@property (nonatomic, assign) NSTimeInterval liveTouchResumeDelay;
 
 + (instancetype)shared;
 - (void)loadSettings;
@@ -350,6 +385,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 - (UIColor *)ocrManualUIColor;
 - (UIColor *)ocrBackgroundUIColor;
 - (void)translateText:(NSString *)text completion:(void (^)(NSString *translated))completion;
+- (void)translateLiveOCRText:(NSString *)text completion:(void (^)(NSString *translated))completion;
 @end
 
 @implementation TOTranslationManager
@@ -419,6 +455,9 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     self.ocrBackgroundHue = (bgHue >= 0.0 && bgHue <= 1.0) ? bgHue : 0.0;
     self.ocrBackgroundSaturation = (bgSat >= 0.0 && bgSat <= 1.0) ? bgSat : 0.0;
     self.ocrBackgroundBrightness = (bgBri >= 0.0 && bgBri <= 1.0) ? bgBri : 0.28;
+
+    CGFloat resumeDelay = [d doubleForKey:kTOLiveTouchResumeDelayKey];
+    self.liveTouchResumeDelay = (resumeDelay >= 0.0 && resumeDelay <= 1.2) ? resumeDelay : 0.20;
 }
 
 - (void)saveSettings {
@@ -445,6 +484,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     [d setDouble:MIN(MAX(self.ocrBackgroundHue, 0.0), 1.0) forKey:kTOOCRBackgroundHueKey];
     [d setDouble:MIN(MAX(self.ocrBackgroundSaturation, 0.0), 1.0) forKey:kTOOCRBackgroundSaturationKey];
     [d setDouble:MIN(MAX(self.ocrBackgroundBrightness, 0.0), 1.0) forKey:kTOOCRBackgroundBrightnessKey];
+    [d setDouble:MIN(MAX(self.liveTouchResumeDelay, 0.0), 1.2) forKey:kTOLiveTouchResumeDelayKey];
     [d synchronize];
 }
 
@@ -588,6 +628,31 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     }] resume];
 }
 
+- (void)translateLiveOCRText:(NSString *)text completion:(void (^)(NSString *translated))completion {
+    NSString *original = text ?: @"";
+    NSString *prepared = TOPrepareLiveOCRSourceText(original);
+    if (!TOShouldTranslateText(prepared)) {
+        if (completion) completion(original);
+        return;
+    }
+
+    [self translateText:prepared completion:^(NSString *translated) {
+        NSString *result = translated.length > 0 ? translated : prepared;
+
+        BOOL unchanged = (result.length > 0 && [result isEqualToString:prepared]);
+        BOOL hasMeaningfulRewrite = (prepared.length > 0 && ![prepared isEqualToString:original]);
+        if (unchanged && hasMeaningfulRewrite && TOShouldTranslateText(original)) {
+            [self translateText:original completion:^(NSString *retryText) {
+                NSString *retry = retryText.length > 0 ? retryText : original;
+                if (completion) completion(retry);
+            }];
+            return;
+        }
+
+        if (completion) completion(result);
+    }];
+}
+
 @end
 
 static NSString *TOUIString(NSString *text) {
@@ -687,7 +752,8 @@ static void TOWarmupUILocalization(void) {
             @"لون النص: الدرجة اللونية", @"لون النص: التشبع", @"لون الخلفية: الدرجة اللونية",
             @"لون الخلفية: التشبع", @"تعتيم الخلفية", @"تعتيم خلفية النص", @"رجوع", @"إلغاء",
             @"تم", @"إغلاق", @"حفظ", @"تحرير", @"تحرير نص OCR", @"حجم نص OCR", @"نتيجة OCR", @"المصدر", @"الهدف",
-            @"جارٍ التقاط الصفحة وتحليلها...", @"تمت محاولة الترجمة"
+            @"جارٍ التقاط الصفحة وتحليلها...", @"تمت محاولة الترجمة",
+            @"مهلة استئناف الترجمه المباشره بعد اللمس", @"كلما زادت المهلة، يصبح التمرير أكثر سلاسة", @"تم ضبط مهلة الاستئناف"
         ];
     });
 
@@ -1732,7 +1798,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
             for (NSMutableDictionary *item in translated) {
                 NSString *line = item[@"source"];
                 dispatch_group_enter(g);
-                [[TOTranslationManager shared] translateText:line completion:^(NSString *text) {
+                [[TOTranslationManager shared] translateLiveOCRText:line completion:^(NSString *text) {
                     item[@"translated"] = text.length > 0 ? text : line;
                     dispatch_group_leave(g);
                 }];
@@ -1744,8 +1810,18 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
             });
         }];
 
-        request.recognitionLevel = VNRequestTextRecognitionLevelFast;
-        request.usesLanguageCorrection = NO;
+        request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
+        request.usesLanguageCorrection = YES;
+        request.minimumTextHeight = 0.012;
+
+        TOTranslationManager *settings = [TOTranslationManager shared];
+        NSString *sourceCode = settings.sourceLanguage ?: @"auto";
+        if (![sourceCode isEqualToString:@"auto"]) {
+            NSString *recognizedLanguage = TONormalizedLocaleIdentifier(sourceCode);
+            if (recognizedLanguage.length > 0) {
+                request.recognitionLanguages = @[recognizedLanguage];
+            }
+        }
 
         dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
             NSError *err = nil;
@@ -1892,6 +1968,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, assign) BOOL liveScrollActive;
 @property (nonatomic, assign) NSTimeInterval liveLastScrollSignalTime;
 @property (nonatomic, assign) BOOL liveTouchActive;
+@property (nonatomic, assign) NSUInteger liveTouchResumeGeneration;
 @property (nonatomic, strong) NSTimer *appTranslateTimer;
 @property (nonatomic, assign) NSUInteger appTranslateBurstGeneration;
 + (instancetype)shared;
@@ -1906,6 +1983,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)beginLiveScrollInteraction;
 - (void)beginLiveTouchInteraction;
 - (void)endLiveTouchInteractionIfNeeded;
+- (void)showLiveTouchResumeDelaySettings;
 - (void)syncLiveTranslationLoopState;
 - (void)liveTranslationTimerFired;
 - (void)scheduleLiveTranslationBurst;
@@ -2877,6 +2955,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     TOTranslationManager *m = [TOTranslationManager shared];
     if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
 
+    self.liveTouchResumeGeneration++;
     self.liveTouchActive = YES;
     self.liveScrollPendingRefresh = YES;
     if (self.liveOverlayView) self.liveOverlayView.hidden = YES;
@@ -2889,10 +2968,22 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     TOTranslationManager *m = [TOTranslationManager shared];
     if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
     if (self.liveScrollActive || self.liveScrollSettleTimer) return;
-    if (CACurrentMediaTime() < self.liveScrollInteractionUntil) return;
 
-    self.liveScrollPendingRefresh = YES;
-    [self requestLiveOCROverlayRefresh];
+    NSTimeInterval now = CACurrentMediaTime();
+    NSTimeInterval delay = MIN(MAX(m.liveTouchResumeDelay, 0.0), 1.2);
+    self.liveScrollInteractionUntil = MAX(self.liveScrollInteractionUntil, now + delay);
+    NSUInteger token = ++self.liveTouchResumeGeneration;
+
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+        if (token != self.liveTouchResumeGeneration) return;
+        TOTranslationManager *inner = [TOTranslationManager shared];
+        if (inner.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
+        if (self.liveTouchActive || self.liveScrollActive || self.liveScrollSettleTimer) return;
+        if (CACurrentMediaTime() < self.liveScrollInteractionUntil) return;
+
+        self.liveScrollPendingRefresh = YES;
+        [self requestLiveOCROverlayRefresh];
+    });
 }
 
 - (void)scheduleLiveRefreshAfterScrollSettled {
@@ -2971,6 +3062,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.liveScrollActive = NO;
         self.liveLastScrollSignalTime = 0;
         self.liveTouchActive = NO;
+        self.liveTouchResumeGeneration++;
         if (self.liveScrollSettleTimer) {
             [self.liveScrollSettleTimer invalidate];
             self.liveScrollSettleTimer = nil;
@@ -3016,6 +3108,40 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             } else {
                 [self showToast:TOUIString(@"تم تفعيل ترجمة التطبيق")];
             }
+        }]];
+    }
+
+    NSTimeInterval delayMs = round(MIN(MAX(m.liveTouchResumeDelay, 0.0), 1.2) * 1000.0);
+    NSString *delayTitle = [NSString stringWithFormat:@"%@ (%dms) ▸", TOUIString(@"مهلة استئناف الترجمه المباشره بعد اللمس"), (int)delayMs];
+    [sheet addAction:[UIAlertAction actionWithTitle:delayTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        [self showLiveTouchResumeDelaySettings];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
+    [self configurePopover:sheet];
+    [top presentViewController:sheet animated:YES completion:^{
+        TOTranslateControllerTree(sheet);
+    }];
+}
+
+- (void)showLiveTouchResumeDelaySettings {
+    UIViewController *top = TOTopViewController();
+    if (!top) return;
+
+    TOTranslationManager *m = [TOTranslationManager shared];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TOUIString(@"مهلة استئناف الترجمه المباشره بعد اللمس")
+                                                                   message:TOUIString(@"كلما زادت المهلة، يصبح التمرير أكثر سلاسة")
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    NSArray<NSNumber *> *delays = @[@0.10, @0.20, @0.35, @0.50];
+    for (NSNumber *value in delays) {
+        NSTimeInterval option = value.doubleValue;
+        BOOL selected = fabs(m.liveTouchResumeDelay - option) < 0.01;
+        NSString *title = [NSString stringWithFormat:@"%dms%@", (int)lround(option * 1000.0), (selected ? @" ✓" : @"")];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            m.liveTouchResumeDelay = option;
+            [m saveSettings];
+            [self showToast:[NSString stringWithFormat:@"%@: %dms", TOUIString(@"تم ضبط مهلة الاستئناف"), (int)lround(option * 1000.0)]];
         }]];
     }
 
