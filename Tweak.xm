@@ -2293,7 +2293,6 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             [self showTranslationModeSettings];
         }]];
 
-        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"ترجمة الصفحة OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self startOCR]; }]];
         [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"إعدادات مظهر OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRAppearanceSettings]; }]];
         [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"تغيير حجم نص OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRTextSizePicker]; }]];
         [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
