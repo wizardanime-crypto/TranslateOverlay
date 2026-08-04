@@ -56,6 +56,7 @@ static NSString *TONormalizedLocaleIdentifier(NSString *languageCode) {
 static const void *kTOTranslateGuardKey = &kTOTranslateGuardKey;
 static const void *kTOTranslateLastTextKey = &kTOTranslateLastTextKey;
 static const void *kTOTranslateLastTargetKey = &kTOTranslateLastTargetKey;
+static const void *kTOTranslateLastAttemptTimeKey = &kTOTranslateLastAttemptTimeKey;
 static IMP kTOUIListSetTextOriginalIMP = NULL;
 static IMP kTOUIListSetSecondaryTextOriginalIMP = NULL;
 static IMP kTOUIListSetAttributedTextOriginalIMP = NULL;
@@ -81,6 +82,19 @@ static void TOTranslateAndApplyTextToObject(id object, NSString *text, void (^ap
             target = dynamicTarget;
         }
     }
+    NSString *lastText = objc_getAssociatedObject(object, kTOTranslateLastTextKey);
+    NSString *lastTarget = objc_getAssociatedObject(object, kTOTranslateLastTargetKey);
+    NSNumber *lastTime = objc_getAssociatedObject(object, kTOTranslateLastAttemptTimeKey);
+    NSTimeInterval now = CACurrentMediaTime();
+    if ([lastText isEqualToString:text] && [lastTarget isEqualToString:target]) {
+        NSTimeInterval elapsed = lastTime ? (now - lastTime.doubleValue) : DBL_MAX;
+        if (elapsed < 1.25) return;
+    }
+
+    objc_setAssociatedObject(object, kTOTranslateLastTextKey, text, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(object, kTOTranslateLastTargetKey, target, OBJC_ASSOCIATION_COPY_NONATOMIC);
+    objc_setAssociatedObject(object, kTOTranslateLastAttemptTimeKey, @(now), OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
     __weak id weakObject = object;
     if (![m respondsToSelector:@selector(translateText:completion:)]) return;
     ((void (*)(id, SEL, NSString *, id))objc_msgSend)(m, @selector(translateText:completion:), text, ^(NSString *translated) {
@@ -799,6 +813,11 @@ static void TOTranslateControllerTree(UIViewController *controller) {
 }
 
 static void TOForceImmediateUILocalizationRefresh(void) {
+    static NSTimeInterval lastRefreshTime = 0;
+    NSTimeInterval now = CACurrentMediaTime();
+    if ((now - lastRefreshTime) < 0.25) return;
+    lastRefreshTime = now;
+
     dispatch_async(dispatch_get_main_queue(), ^{
         NSArray<UIWindow *> *windows = TOVisibleWindows();
         if (windows.count == 0) return;
@@ -817,6 +836,15 @@ static void TOForceImmediateUILocalizationRefresh(void) {
             }
         });
     });
+}
+
+static BOOL TOIsLikelyTextBearingView(UIView *view) {
+    return [view isKindOfClass:[UILabel class]] ||
+           [view isKindOfClass:[UIButton class]] ||
+           [view isKindOfClass:[UITextField class]] ||
+           [view isKindOfClass:[UITextView class]] ||
+           [view isKindOfClass:[UISegmentedControl class]] ||
+           [view isKindOfClass:[UISearchBar class]];
 }
 
 static CGFloat TOFittedFontSizeForText(NSString *text, CGRect rect, CGFloat minSize, CGFloat maxSize) {
@@ -2540,7 +2568,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
 - (void)scheduleAppTranslationBurst {
     NSUInteger token = ++self.appTranslateBurstGeneration;
-    NSArray<NSNumber *> *steps = @[@0.0, @0.08, @0.20, @0.38, @0.65, @1.0];
+    NSArray<NSNumber *> *steps = @[@0.0, @0.22, @0.55];
     for (NSNumber *delay in steps) {
         NSTimeInterval t = delay.doubleValue;
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(t * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -2557,14 +2585,16 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     BOOL shouldRun = (m.translationTapMode == TOTranslationTapModeNormal);
 
     if (shouldRun) {
+        BOOL didCreateTimer = NO;
         if (!self.appTranslateTimer) {
-            self.appTranslateTimer = [NSTimer scheduledTimerWithTimeInterval:0.65
+            self.appTranslateTimer = [NSTimer scheduledTimerWithTimeInterval:1.05
                                                                        target:self
                                                                      selector:@selector(appTranslationTimerFired)
                                                                      userInfo:nil
                                                                       repeats:YES];
+            didCreateTimer = YES;
         }
-        [self scheduleAppTranslationBurst];
+        if (didCreateTimer) [self scheduleAppTranslationBurst];
         TOForceImmediateUILocalizationRefresh();
     } else {
         self.appTranslateBurstGeneration++;
@@ -3068,9 +3098,8 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
 - (void)didMoveToWindow {
     %orig;
-    if (self.window) {
+    if (self.window && TOIsLikelyTextBearingView(self)) {
         TOTranslateViewTree(self);
-        [[TOFloatingOverlayController shared] syncAppTranslationLoopState];
     }
 }
 
