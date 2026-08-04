@@ -554,11 +554,26 @@ static void TOTranslateViewTree(UIView *view) {
         [[TOTranslationManager shared] translateText:tf.placeholder completion:^(NSString *translated) {
             if (translated.length > 0) tf.placeholder = translated;
         }];
+        if (tf.attributedPlaceholder.string.length > 0) {
+            NSString *raw = tf.attributedPlaceholder.string;
+            [[TOTranslationManager shared] translateText:raw completion:^(NSString *translated) {
+                if (translated.length > 0) tf.attributedPlaceholder = [[NSAttributedString alloc] initWithString:translated attributes:nil];
+            }];
+        }
     } else if ([view isKindOfClass:[UITextView class]]) {
         UITextView *tv = (UITextView *)view;
         [[TOTranslationManager shared] translateText:tv.text completion:^(NSString *translated) {
             if (translated.length > 0) tv.text = translated;
         }];
+    } else if ([view isKindOfClass:[UISegmentedControl class]]) {
+        UISegmentedControl *seg = (UISegmentedControl *)view;
+        for (NSInteger i = 0; i < (NSInteger)seg.numberOfSegments; i++) {
+            NSString *title = [seg titleForSegmentAtIndex:i];
+            if (title.length == 0) continue;
+            [[TOTranslationManager shared] translateText:title completion:^(NSString *translated) {
+                if (translated.length > 0) [seg setTitle:translated forSegmentAtIndex:i];
+            }];
+        }
     }
 
     if (view.accessibilityLabel.length > 0) {
@@ -571,13 +586,62 @@ static void TOTranslateViewTree(UIView *view) {
     for (UIView *sub in view.subviews) TOTranslateViewTree(sub);
 }
 
+static void TOTranslateBarButtonItems(NSArray<UIBarButtonItem *> *items) {
+    for (UIBarButtonItem *item in items) {
+        if (!item) continue;
+        TOTranslateAndApplyTextToObject(item, item.title, ^(NSString *translated) {
+            if (![[item title] isEqualToString:translated]) [item setTitle:translated];
+        });
+    }
+}
+
+static void TOTranslateControllerMetadata(UIViewController *controller) {
+    if (!controller) return;
+
+    TOTranslateAndApplyTextToObject(controller, controller.title, ^(NSString *translated) {
+        if (![[controller title] isEqualToString:translated]) [controller setTitle:translated];
+    });
+
+    UINavigationItem *nav = controller.navigationItem;
+    if (nav) {
+        TOTranslateAndApplyTextToObject(nav, nav.title, ^(NSString *translated) {
+            if (![[nav title] isEqualToString:translated]) [nav setTitle:translated];
+        });
+        TOTranslateBarButtonItems(nav.leftBarButtonItems ?: @[]);
+        TOTranslateBarButtonItems(nav.rightBarButtonItems ?: @[]);
+        if (nav.backBarButtonItem) TOTranslateBarButtonItems(@[nav.backBarButtonItem]);
+    }
+
+    if (controller.tabBarItem) {
+        UITabBarItem *tab = controller.tabBarItem;
+        TOTranslateAndApplyTextToObject(tab, tab.title, ^(NSString *translated) {
+            if (![[tab title] isEqualToString:translated]) [tab setTitle:translated];
+        });
+    }
+
+    if ([controller isKindOfClass:[UINavigationController class]]) {
+        UINavigationController *navVC = (UINavigationController *)controller;
+        for (UIViewController *child in navVC.viewControllers) TOTranslateControllerMetadata(child);
+    }
+    if ([controller isKindOfClass:[UITabBarController class]]) {
+        UITabBarController *tabVC = (UITabBarController *)controller;
+        for (UIViewController *child in tabVC.viewControllers) TOTranslateControllerMetadata(child);
+    }
+    for (UIViewController *child in controller.childViewControllers) TOTranslateControllerMetadata(child);
+    if (controller.presentedViewController) TOTranslateControllerMetadata(controller.presentedViewController);
+}
+
 static void TOTranslateControllerTree(UIViewController *controller) {
     if (!controller) return;
     dispatch_async(dispatch_get_main_queue(), ^{
         if (!controller.view) return;
         TOTranslateViewTree(controller.view);
+        TOTranslateControllerMetadata(controller);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            if (controller.view.window) TOTranslateViewTree(controller.view);
+            if (controller.view.window) {
+                TOTranslateViewTree(controller.view);
+                TOTranslateControllerMetadata(controller);
+            }
         });
     });
 }
@@ -1430,6 +1494,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, weak) UILabel *activeSizePreviewLabel;
 @property (nonatomic, assign) BOOL liveTranslateEnabled;
 @property (nonatomic, assign) NSUInteger liveTranslateGeneration;
+@property (nonatomic, strong) NSTimer *appTranslateTimer;
 + (instancetype)shared;
 - (void)installIfPossible;
 - (void)showToast:(NSString *)message;
@@ -1437,6 +1502,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)startOCRForMangaMode:(BOOL)useMangaMode;
 - (void)showTranslationModeSettings;
 - (void)handleScrollActivity;
+- (void)syncAppTranslationLoopState;
+- (void)appTranslationTimerFired;
 - (void)showOCRAppearanceSettings;
 - (void)showOCRTextSizePicker;
 - (void)showLanguagePicker:(BOOL)isSource;
@@ -2286,6 +2353,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             m.mangaTranslationModeEnabled = (mode == TOTranslationTapModeManga);
             if (mode != TOTranslationTapModeLive) self.liveTranslateEnabled = NO;
             [m saveSettings];
+            [self syncAppTranslationLoopState];
 
             if (mode == TOTranslationTapModeManga) {
                 [self showToast:TOUIString(@"تم تفعيل نمط ترجمة المانجا")];
@@ -2302,6 +2370,36 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     [top presentViewController:sheet animated:YES completion:^{
         TOTranslateControllerTree(sheet);
     }];
+}
+
+- (void)appTranslationTimerFired {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    if (m.translationTapMode != TOTranslationTapModeNormal) {
+        [self syncAppTranslationLoopState];
+        return;
+    }
+    TOForceImmediateUILocalizationRefresh();
+}
+
+- (void)syncAppTranslationLoopState {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    BOOL shouldRun = (m.translationTapMode == TOTranslationTapModeNormal);
+
+    if (shouldRun) {
+        if (!self.appTranslateTimer) {
+            self.appTranslateTimer = [NSTimer scheduledTimerWithTimeInterval:0.65
+                                                                       target:self
+                                                                     selector:@selector(appTranslationTimerFired)
+                                                                     userInfo:nil
+                                                                      repeats:YES];
+        }
+        TOForceImmediateUILocalizationRefresh();
+    } else {
+        if (self.appTranslateTimer) {
+            [self.appTranslateTimer invalidate];
+            self.appTranslateTimer = nil;
+        }
+    }
 }
 
 - (void)showSettings {
@@ -2394,6 +2492,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             break;
         case TOTranslationTapModeNormal:
         default:
+            [self syncAppTranslationLoopState];
             [self translateCurrentPage];
             break;
     }
@@ -2478,6 +2577,8 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.tripleTap.cancelsTouchesInView = NO;
         [w addGestureRecognizer:self.tripleTap];
     }
+
+    [self syncAppTranslationLoopState];
 }
 
 @end
@@ -2549,6 +2650,43 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     TOTranslateAndApplyTextToObject(self, title, ^(NSString *translated) {
         if (![[self title] isEqualToString:translated]) {
             [self setTitle:translated];
+        }
+    });
+}
+
+%end
+
+%hook UIBarButtonItem
+
+- (void)setTitle:(NSString *)title {
+    if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) {
+        %orig(title);
+        return;
+    }
+
+    %orig(title);
+    TOTranslateAndApplyTextToObject(self, title, ^(NSString *translated) {
+        if (![[self title] isEqualToString:translated]) {
+            [self setTitle:translated];
+        }
+    });
+}
+
+%end
+
+%hook UISearchBar
+
+- (void)setPlaceholder:(NSString *)placeholder {
+    if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) {
+        %orig(placeholder);
+        return;
+    }
+
+    %orig(placeholder);
+    TOTranslateAndApplyTextToObject(self, placeholder, ^(NSString *translated) {
+        NSString *current = [self placeholder] ?: @"";
+        if (![current isEqualToString:translated]) {
+            [self setPlaceholder:translated];
         }
     });
 }
