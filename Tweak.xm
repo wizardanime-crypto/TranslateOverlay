@@ -1222,6 +1222,7 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 @interface TOPageOCRController : NSObject
 + (instancetype)shared;
 - (void)presentOCRForWindow:(UIWindow *)window completion:(void (^)(void))completion;
+- (void)buildLiveTranslatedOverlayForWindow:(UIWindow *)window completion:(void (^)(UIImage *resultImage))completion;
 @end
 
 @implementation TOPageOCRController
@@ -1661,6 +1662,81 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
     return TORenderTranslatedTextOnImage(image, items);
 }
 
+- (void)buildLiveTranslatedOverlayForWindow:(UIWindow *)window completion:(void (^)(UIImage *resultImage))completion {
+    UIImage *image = [self captureScreenshot:window];
+    if (!image || !image.CGImage) {
+        if (completion) completion(nil);
+        return;
+    }
+
+    if (@available(iOS 13.0, *)) {
+        VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] initWithCompletionHandler:^(VNRequest *request, NSError *error) {
+            NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
+            if (!error) {
+                for (VNRecognizedTextObservation *obs in request.results) {
+                    VNRecognizedText *top = [[obs topCandidates:1] firstObject];
+                    if (top.string.length == 0) continue;
+                    CGRect rect = [self imageRectForNormalizedVisionRect:obs.boundingBox imageSize:image.size];
+                    UIColor *autoColor = [self detectedTextColorInImage:image rect:rect];
+                    UIColor *autoBackgroundColor = [self detectedBackgroundColorInImage:image rect:rect textColor:autoColor];
+                    [items addObject:@{
+                        @"source": top.string,
+                        @"rect": [NSValue valueWithCGRect:rect],
+                        @"detectedColor": autoColor ?: UIColor.whiteColor,
+                        @"detectedBackgroundColor": autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0]
+                    }];
+                }
+            }
+
+            TOTranslationManager *settings = [TOTranslationManager shared];
+            if (settings.mangaTranslationModeEnabled && items.count > 1) {
+                items = [[self mergedMangaBlocksFromItems:items] mutableCopy];
+            }
+
+            if (items.count == 0) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (completion) completion(nil);
+                });
+                return;
+            }
+
+            dispatch_group_t g = dispatch_group_create();
+            NSMutableArray<NSMutableDictionary *> *translated = [NSMutableArray arrayWithCapacity:items.count];
+            for (NSDictionary *raw in items) [translated addObject:[raw mutableCopy]];
+
+            for (NSMutableDictionary *item in translated) {
+                NSString *line = item[@"source"];
+                dispatch_group_enter(g);
+                [[TOTranslationManager shared] translateText:line completion:^(NSString *text) {
+                    item[@"translated"] = text.length > 0 ? text : line;
+                    dispatch_group_leave(g);
+                }];
+            }
+
+            dispatch_group_notify(g, dispatch_get_main_queue(), ^{
+                UIImage *rendered = [self renderTranslatedTextOnImage:image items:translated];
+                if (completion) completion(rendered);
+            });
+        }];
+
+        request.recognitionLevel = VNRequestTextRecognitionLevelFast;
+        request.usesLanguageCorrection = NO;
+
+        dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+            NSError *err = nil;
+            VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:image.CGImage options:@{}];
+            [handler performRequests:@[request] error:&err];
+            if (err) {
+                dispatch_async(dispatch_get_main_queue(), ^{
+                    if (completion) completion(nil);
+                });
+            }
+        });
+    } else {
+        if (completion) completion(nil);
+    }
+}
+
 - (void)presentOCRForWindow:(UIWindow *)window completion:(void (^)(void))completion {
     UIImage *image = [self captureScreenshot:window];
     if (!image || !image.CGImage) {
@@ -1780,6 +1856,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, assign) NSUInteger liveTranslateGeneration;
 @property (nonatomic, strong) NSTimer *liveTranslateTimer;
 @property (nonatomic, assign) NSUInteger liveTranslateBurstGeneration;
+@property (nonatomic, strong) UIImageView *liveOverlayView;
+@property (nonatomic, assign) BOOL liveOCRInFlight;
+@property (nonatomic, assign) BOOL liveOCRNeedsRefresh;
+@property (nonatomic, assign) NSUInteger liveOCRGeneration;
 @property (nonatomic, strong) NSTimer *appTranslateTimer;
 @property (nonatomic, assign) NSUInteger appTranslateBurstGeneration;
 + (instancetype)shared;
@@ -1794,6 +1874,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)syncLiveTranslationLoopState;
 - (void)liveTranslationTimerFired;
 - (void)scheduleLiveTranslationBurst;
+- (void)requestLiveOCROverlayRefresh;
+- (void)removeLiveOverlayIfNeeded;
 - (void)syncAppTranslationLoopState;
 - (void)appTranslationTimerFired;
 - (void)scheduleAppTranslationBurst;
@@ -2617,6 +2699,90 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     [self translateCurrentPageWithToast:YES];
 }
 
+- (void)removeLiveOverlayIfNeeded {
+    if (self.liveOverlayView) {
+        self.liveOverlayView.hidden = YES;
+        self.liveOverlayView.image = nil;
+        [self.liveOverlayView removeFromSuperview];
+        self.liveOverlayView = nil;
+    }
+}
+
+- (void)requestLiveOCROverlayRefresh {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) {
+        [self removeLiveOverlayIfNeeded];
+        return;
+    }
+
+    UIWindow *w = self.attachedWindow ?: TOActiveWindow();
+    if (!w) return;
+
+    if (self.liveOCRInFlight) {
+        self.liveOCRNeedsRefresh = YES;
+        return;
+    }
+
+    if (!self.liveOverlayView) {
+        UIImageView *overlay = [[UIImageView alloc] initWithFrame:w.bounds];
+        overlay.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
+        overlay.userInteractionEnabled = NO;
+        overlay.contentMode = UIViewContentModeScaleToFill;
+        overlay.hidden = YES;
+        self.liveOverlayView = overlay;
+    }
+
+    if (self.liveOverlayView.superview != w) {
+        [self.liveOverlayView removeFromSuperview];
+        if (self.floatingButton.superview == w) {
+            [w insertSubview:self.liveOverlayView belowSubview:self.floatingButton];
+        } else {
+            [w addSubview:self.liveOverlayView];
+        }
+    } else if (self.floatingButton.superview == w) {
+        [w insertSubview:self.liveOverlayView belowSubview:self.floatingButton];
+    }
+
+    self.liveOCRInFlight = YES;
+    self.liveOCRNeedsRefresh = NO;
+    NSUInteger token = ++self.liveOCRGeneration;
+
+    BOOL originalOverlayHidden = self.liveOverlayView.hidden;
+    BOOL originalButtonHidden = self.floatingButton.hidden;
+    self.liveOverlayView.hidden = YES;
+    if (self.floatingButton.superview == w) self.floatingButton.hidden = YES;
+
+    [[TOPageOCRController shared] buildLiveTranslatedOverlayForWindow:w completion:^(UIImage *resultImage) {
+        if (self.floatingButton.superview == w) self.floatingButton.hidden = originalButtonHidden;
+        self.liveOCRInFlight = NO;
+        if (token != self.liveOCRGeneration) return;
+
+        TOTranslationManager *inner = [TOTranslationManager shared];
+        BOOL stillLive = (inner.translationTapMode == TOTranslationTapModeLive && self.liveTranslateEnabled);
+        if (!stillLive) {
+            [self removeLiveOverlayIfNeeded];
+            return;
+        }
+
+        if (resultImage) {
+            self.liveOverlayView.frame = w.bounds;
+            self.liveOverlayView.image = resultImage;
+            self.liveOverlayView.hidden = NO;
+            if (self.floatingButton.superview == w) {
+                [w insertSubview:self.liveOverlayView belowSubview:self.floatingButton];
+                [w bringSubviewToFront:self.floatingButton];
+            }
+        } else {
+            self.liveOverlayView.hidden = originalOverlayHidden;
+        }
+
+        if (self.liveOCRNeedsRefresh) {
+            self.liveOCRNeedsRefresh = NO;
+            [self requestLiveOCROverlayRefresh];
+        }
+    }];
+}
+
 - (void)handleScrollActivity {
     TOTranslationManager *m = [TOTranslationManager shared];
     if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
@@ -2627,6 +2793,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.16 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         if (token != self.liveTranslateGeneration) return;
         [self translateCurrentPageWithToast:NO];
+        [self requestLiveOCROverlayRefresh];
         [self scheduleLiveTranslationBurst];
     });
 }
@@ -2638,6 +2805,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         return;
     }
     [self translateCurrentPageWithToast:NO];
+    [self requestLiveOCROverlayRefresh];
 }
 
 - (void)scheduleLiveTranslationBurst {
@@ -2650,6 +2818,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             if (token != self.liveTranslateBurstGeneration) return;
             if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
             [self translateCurrentPageWithToast:NO];
+            [self requestLiveOCROverlayRefresh];
         });
     }
 }
@@ -2671,6 +2840,10 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         if (didCreateTimer) [self scheduleLiveTranslationBurst];
     } else {
         self.liveTranslateBurstGeneration++;
+        self.liveOCRGeneration++;
+        self.liveOCRNeedsRefresh = NO;
+        self.liveOCRInFlight = NO;
+        [self removeLiveOverlayIfNeeded];
         if (self.liveTranslateTimer) {
             [self.liveTranslateTimer invalidate];
             self.liveTranslateTimer = nil;
@@ -2849,6 +3022,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             [self syncLiveTranslationLoopState];
             if (self.liveTranslateEnabled) {
                 [self translateCurrentPageWithToast:NO];
+                [self requestLiveOCROverlayRefresh];
                 [self scheduleLiveTranslationBurst];
                 [self showToast:TOUIString(@"تم تفعيل نمط الترجمه المباشره")];
             } else {
