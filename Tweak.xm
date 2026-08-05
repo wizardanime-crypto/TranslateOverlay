@@ -444,6 +444,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 - (void)translateText:(NSString *)text completion:(void (^)(NSString *translated))completion;
 - (void)translateOCRText:(NSString *)text completion:(void (^)(NSString *translated))completion;
 - (void)applyLiveCorrectionsFromItems:(NSArray<NSDictionary *> *)items;
+- (NSUInteger)clearLiveCorrectionsForItems:(NSArray<NSDictionary *> *)items;
 - (NSString *)applyReplacementWordsToText:(NSString *)text;
 @end
 
@@ -881,6 +882,32 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     if (changed) [self saveSettings];
 }
 
+- (NSUInteger)clearLiveCorrectionsForItems:(NSArray<NSDictionary *> *)items {
+    if (items.count == 0) return 0;
+
+    NSString *target = self.targetLanguage ?: @"ar";
+    NSUInteger removedCount = 0;
+
+    @synchronized (self) {
+        for (NSDictionary *item in items) {
+            if (![item isKindOfClass:[NSDictionary class]]) continue;
+
+            NSString *source = item[@"source"];
+            NSString *prepared = TOPrepareLiveOCRSourceText(source ?: @"");
+            if (!TOShouldTranslateText(prepared)) continue;
+
+            NSString *key = [NSString stringWithFormat:@"%@|%@", target, prepared];
+            if (self.liveOCRCorrections[key] != nil) {
+                [self.liveOCRCorrections removeObjectForKey:key];
+                removedCount++;
+            }
+        }
+    }
+
+    if (removedCount > 0) [self saveSettings];
+    return removedCount;
+}
+
 - (NSString *)applyReplacementWordsToText:(NSString *)text {
     if (text.length == 0) return text ?: @"";
     if (!self.replacementWordsEnabled) return text;
@@ -1020,7 +1047,8 @@ static void TOWarmupUILocalization(void) {
             @"تحديد الكل للحذف", @"تأكيد", @"سيتم حذف جميع الكلمات البديله", @"حذف", @"تم حذف جميع الكلمات البديله",
             @"تأكيد الحذف", @"هل أنت متأكد من حذف هذه الكلمة؟", @"نعم", @"لا",
             @"مسح الذاكرة المؤقته", @"تم مسح الذاكرة المؤقته", @"هل تريد مسح الذاكرة المؤقته؟",
-            @"استعادة ضبط المصنع", @"تمت استعادة ضبط المصنع", @"هل أنت متأكد من استعادة ضبط المصنع؟ سيتم حذف كل البيانات المخزنة."
+            @"استعادة ضبط المصنع", @"تمت استعادة ضبط المصنع", @"هل أنت متأكد من استعادة ضبط المصنع؟ سيتم حذف كل البيانات المخزنة.",
+            @"تم حذف تعديلات الترجمة المخزنة", @"لا توجد تعديلات ترجمة مخزنة"
         ];
     });
 
@@ -1608,7 +1636,19 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 }
 
 - (void)restoreOriginalPressed {
+    NSUInteger removed = [[TOTranslationManager shared] clearLiveCorrectionsForItems:self.items];
     [self restoreOriginalTranslatedBlocks];
+
+    Class overlayClass = NSClassFromString(@"TOFloatingOverlayController");
+    if (overlayClass && [overlayClass respondsToSelector:@selector(shared)]) {
+        id overlay = ((id (*)(id, SEL))objc_msgSend)(overlayClass, @selector(shared));
+        if (overlay && [overlay respondsToSelector:@selector(showToast:)]) {
+            NSString *message = (removed > 0)
+                ? TOUIString(@"تم حذف تعديلات الترجمة المخزنة")
+                : TOUIString(@"لا توجد تعديلات ترجمة مخزنة");
+            ((void (*)(id, SEL, NSString *))objc_msgSend)(overlay, @selector(showToast:), message);
+        }
+    }
 }
 
 @end
@@ -3907,6 +3947,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             [self showReplacementWordsSettings];
         }]];
 
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"إعدادات مظهر OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRAppearanceSettings]; }]];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"تغيير حجم نص OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRTextSizePicker]; }]];
+
         [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"مسح الذاكرة المؤقته") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
             UIViewController *confirmTop = TOTopViewController();
             if (!confirmTop) return;
@@ -3952,9 +3995,6 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                 TOTranslateControllerTree(confirm);
             }];
         }]];
-
-        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"إعدادات مظهر OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRAppearanceSettings]; }]];
-        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"تغيير حجم نص OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRTextSizePicker]; }]];
         [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
         [self configurePopover:ocrSheet];
         [menuTop presentViewController:ocrSheet animated:YES completion:^{
