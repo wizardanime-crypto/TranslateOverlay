@@ -3538,17 +3538,22 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         UIAlertController *alert = [UIAlertController alertControllerWithTitle:TOUIString(@"إضافة كلمة بديلة")
                                                                        message:nil
                                                                 preferredStyle:UIAlertControllerStyleAlert];
+        objc_setAssociatedObject(alert, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
             field.placeholder = TOUIString(@"الكلمة الأصلية");
+            objc_setAssociatedObject(field, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }];
         [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
             field.placeholder = TOUIString(@"الكلمة البديلة");
+            objc_setAssociatedObject(field, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         }];
 
         [alert addAction:[UIAlertAction actionWithTitle:TOUIString(@"إلغاء") style:UIAlertActionStyleCancel handler:nil]];
         [alert addAction:[UIAlertAction actionWithTitle:TOUIString(@"حفظ") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *saveAction) {
-            NSString *from = [alert.textFields.firstObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-            NSString *to = [alert.textFields.lastObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            UITextField *fromField = (alert.textFields.count > 0) ? alert.textFields[0] : nil;
+            UITextField *toField = (alert.textFields.count > 1) ? alert.textFields[1] : nil;
+            NSString *from = [fromField.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            NSString *to = [toField.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
             if (from.length == 0 || to.length == 0) return;
 
             @synchronized (m) {
@@ -3560,9 +3565,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             [self showToast:TOUIString(@"تم حفظ الكلمات البديله")];
         }]];
 
-        [top presentViewController:alert animated:YES completion:^{
-            TOTranslateControllerTree(alert);
-        }];
+        [top presentViewController:alert animated:YES completion:nil];
     }]];
 
     [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"تحرير متعدد (سطر لكل كلمة)") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
@@ -3650,6 +3653,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TOUIString(@"تحرير الكلمات البديله")
                                                                    message:TOUIString(@"اختر كلمة لحذفها أو احذف الكل")
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
+    objc_setAssociatedObject(sheet, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     for (NSString *from in keys) {
         NSString *to = nil;
@@ -4198,6 +4202,11 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 %hook UIAlertController
 
 - (void)setTitle:(NSString *)title {
+    if (TOShouldSkipUITranslationForObject(self)) {
+        %orig(title);
+        return;
+    }
+
     if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) {
         %orig(title);
         return;
@@ -4212,6 +4221,11 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 }
 
 - (void)setMessage:(NSString *)message {
+    if (TOShouldSkipUITranslationForObject(self)) {
+        %orig(message);
+        return;
+    }
+
     if ([objc_getAssociatedObject(self, kTOTranslateGuardKey) boolValue]) {
         %orig(message);
         return;
@@ -4226,6 +4240,11 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 }
 
 - (void)addAction:(UIAlertAction *)action {
+    if (TOShouldSkipUITranslationForObject(self)) {
+        %orig(action);
+        return;
+    }
+
     %orig(action);
     NSString *title = [action title];
     if (title.length == 0) return;
