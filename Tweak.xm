@@ -2058,6 +2058,129 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     return [UIColor colorWithRed:(sumR / sumW) green:(sumG / sumW) blue:(sumB / sumW) alpha:1.0];
 }
 
+- (UIColor *)smartTextColorInImage:(UIImage *)image
+                               rect:(CGRect)rect
+                     backgroundHint:(UIColor *)backgroundHint {
+    if (!image.CGImage || CGRectIsEmpty(rect)) return nil;
+
+    CGRect safe = CGRectIntersection(rect, CGRectMake(0, 0, image.size.width, image.size.height));
+    if (CGRectIsEmpty(safe) || safe.size.width < 2 || safe.size.height < 2) return nil;
+
+    CGFloat scaleX = (CGFloat)CGImageGetWidth(image.CGImage) / image.size.width;
+    CGFloat scaleY = (CGFloat)CGImageGetHeight(image.CGImage) / image.size.height;
+    CGRect pxRect = CGRectIntegral(CGRectMake(safe.origin.x * scaleX, safe.origin.y * scaleY, safe.size.width * scaleX, safe.size.height * scaleY));
+    CGImageRef cropped = CGImageCreateWithImageInRect(image.CGImage, pxRect);
+    if (!cropped) return nil;
+
+    const size_t w = 36;
+    const size_t h = 36;
+    const size_t bpp = 4;
+    const size_t bpr = w * bpp;
+    uint8_t *buf = (uint8_t *)calloc(h * bpr, sizeof(uint8_t));
+    if (!buf) {
+        CGImageRelease(cropped);
+        return nil;
+    }
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(buf, w, h, 8, bpr, cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) {
+        free(buf);
+        CGImageRelease(cropped);
+        return nil;
+    }
+
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cropped);
+
+    CGFloat br = 0, bg = 0, bb = 0;
+    BOOL hasBG = TOGetRGBComponents(backgroundHint, &br, &bg, &bb);
+    CGFloat bgLum = hasBG ? ((0.2126 * br) + (0.7152 * bg) + (0.0722 * bb)) : 0.5;
+
+    CGFloat luminance[w * h];
+    for (size_t y = 0; y < h; y++) {
+        for (size_t x = 0; x < w; x++) {
+            size_t idx = y * bpr + x * bpp;
+            CGFloat r = buf[idx] / 255.0;
+            CGFloat g = buf[idx + 1] / 255.0;
+            CGFloat b = buf[idx + 2] / 255.0;
+            luminance[(y * w) + x] = (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
+        }
+    }
+
+    static const NSInteger kBinsPerChannel = 16;
+    static const NSInteger kTotalBins = kBinsPerChannel * kBinsPerChannel * kBinsPerChannel;
+    CGFloat binWeight[kTotalBins];
+    CGFloat binSumR[kTotalBins];
+    CGFloat binSumG[kTotalBins];
+    CGFloat binSumB[kTotalBins];
+    memset(binWeight, 0, sizeof(binWeight));
+    memset(binSumR, 0, sizeof(binSumR));
+    memset(binSumG, 0, sizeof(binSumG));
+    memset(binSumB, 0, sizeof(binSumB));
+
+    for (size_t y = 1; y + 1 < h; y++) {
+        for (size_t x = 1; x + 1 < w; x++) {
+            size_t idx = y * bpr + x * bpp;
+            CGFloat r = buf[idx] / 255.0;
+            CGFloat g = buf[idx + 1] / 255.0;
+            CGFloat b = buf[idx + 2] / 255.0;
+            CGFloat a = buf[idx + 3] / 255.0;
+            if (a < 0.18) continue;
+
+            CGFloat maxC = MAX(r, MAX(g, b));
+            CGFloat minC = MIN(r, MIN(g, b));
+            CGFloat sat = (maxC <= 0.0001) ? 0.0 : ((maxC - minC) / maxC);
+            CGFloat lum = luminance[(y * w) + x];
+
+            CGFloat edge = fabs(lum - luminance[(y * w) + (x - 1)]) +
+                           fabs(lum - luminance[(y * w) + (x + 1)]) +
+                           fabs(lum - luminance[((y - 1) * w) + x]) +
+                           fabs(lum - luminance[((y + 1) * w) + x]);
+
+            CGFloat bgDist = hasBG ? TOColorDistance(r, g, b, br, bg, bb) : 0.25;
+            CGFloat lumDelta = fabs(lum - bgLum);
+            CGFloat weight = a * (0.35 + MIN(2.4, edge * 5.0)) * (0.40 + MIN(1.9, bgDist * 4.0 + lumDelta * 2.8));
+            if (sat < 0.08 && lumDelta < 0.18) weight *= 0.55;
+            if (weight < 0.03) continue;
+
+            NSInteger ri = (NSInteger)lround(r * (kBinsPerChannel - 1));
+            NSInteger gi = (NSInteger)lround(g * (kBinsPerChannel - 1));
+            NSInteger bi = (NSInteger)lround(b * (kBinsPerChannel - 1));
+            ri = MAX(0, MIN(kBinsPerChannel - 1, ri));
+            gi = MAX(0, MIN(kBinsPerChannel - 1, gi));
+            bi = MAX(0, MIN(kBinsPerChannel - 1, bi));
+            NSInteger bin = (ri << 8) | (gi << 4) | bi;
+
+            binWeight[bin] += weight;
+            binSumR[bin] += r * weight;
+            binSumG[bin] += g * weight;
+            binSumB[bin] += b * weight;
+        }
+    }
+
+    NSInteger bestBin = -1;
+    CGFloat bestScore = 0;
+    for (NSInteger i = 0; i < kTotalBins; i++) {
+        if (binWeight[i] > bestScore) {
+            bestScore = binWeight[i];
+            bestBin = i;
+        }
+    }
+
+    CGContextRelease(ctx);
+    free(buf);
+    CGImageRelease(cropped);
+
+    if (bestBin < 0 || bestScore < 0.1) return nil;
+    CGFloat wSum = MAX(0.0001, binWeight[bestBin]);
+    return [UIColor colorWithRed:(binSumR[bestBin] / wSum)
+                           green:(binSumG[bestBin] / wSum)
+                            blue:(binSumB[bestBin] / wSum)
+                           alpha:1.0];
+}
+
 - (NSDictionary *)smartStyleForImage:(UIImage *)image
                      textRect:(CGRect)textRect
                    textColor:(UIColor *)textColor
@@ -2080,8 +2203,8 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     UIColor *textStart = textColor;
     UIColor *textEnd = textColor;
     if (needsText) {
-        textStart = [self detectedTextColorInImage:image rect:topHalf] ?: textColor;
-        textEnd = [self detectedTextColorInImage:image rect:bottomHalf] ?: textColor;
+        textStart = [self smartTextColorInImage:image rect:topHalf backgroundHint:backgroundColor] ?: [self detectedTextColorInImage:image rect:topHalf] ?: textColor;
+        textEnd = [self smartTextColorInImage:image rect:bottomHalf backgroundHint:backgroundColor] ?: [self detectedTextColorInImage:image rect:bottomHalf] ?: textColor;
     }
 
     CGRect bgProbe = CGRectInset(textRect, -12.0, -8.0);
@@ -2094,8 +2217,8 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     UIColor *bgStart = backgroundColor;
     UIColor *bgEnd = backgroundColor;
     if (needsBackground) {
-        bgStart = [self averageColorInImage:image rect:bgTop excludingColor:textColor minDistance:0.12] ?: backgroundColor;
-        bgEnd = [self averageColorInImage:image rect:bgBottom excludingColor:textColor minDistance:0.12] ?: backgroundColor;
+        bgStart = [self detectedBackgroundColorInImage:image rect:bgTop textColor:textColor] ?: [self averageColorInImage:image rect:bgTop excludingColor:textColor minDistance:0.12] ?: backgroundColor;
+        bgEnd = [self detectedBackgroundColorInImage:image rect:bgBottom textColor:textColor] ?: [self averageColorInImage:image rect:bgBottom excludingColor:textColor minDistance:0.12] ?: backgroundColor;
     }
 
     UIEdgeInsets insets = UIEdgeInsetsMake(1.0, 2.0, 1.0, 2.0);
@@ -2207,6 +2330,48 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         style[@"bgCornerRadius"] = @(3.0);
     }
     return style;
+}
+
+- (void)applySmartCompatibilityStyleToItem:(NSMutableDictionary *)item
+                                     image:(UIImage *)image
+                                  settings:(TOTranslationManager *)settings {
+    if (!item || !image || !settings.smartCompatibilityEnabled) return;
+
+    BOOL smartText = settings.ocrAutoColorEnabled;
+    BOOL smartBg = settings.ocrBackgroundAutoColorEnabled;
+    if (!smartText && !smartBg) return;
+
+    NSValue *rectValue = item[@"rect"];
+    if (![rectValue isKindOfClass:[NSValue class]]) return;
+    CGRect rect = [rectValue CGRectValue];
+    if (CGRectIsEmpty(rect)) return;
+
+    UIColor *autoColor = item[@"detectedColor"];
+    if (![autoColor isKindOfClass:[UIColor class]]) autoColor = UIColor.whiteColor;
+    UIColor *autoBackgroundColor = item[@"detectedBackgroundColor"];
+    if (![autoBackgroundColor isKindOfClass:[UIColor class]]) autoBackgroundColor = [UIColor colorWithWhite:0.0 alpha:1.0];
+
+    NSDictionary *smartStyle = [self smartStyleForImage:image
+                                                textRect:rect
+                                              textColor:autoColor
+                                        backgroundColor:autoBackgroundColor
+                                               needsText:smartText
+                                         needsBackground:smartBg];
+    if (![smartStyle isKindOfClass:[NSDictionary class]]) return;
+
+    id textStart = smartStyle[@"textStart"];
+    id textEnd = smartStyle[@"textEnd"];
+    id bgStart = smartStyle[@"bgStart"];
+    id bgEnd = smartStyle[@"bgEnd"];
+    id bgInsets = smartStyle[@"bgInsets"];
+    id bgCornerRadius = smartStyle[@"bgCornerRadius"];
+
+    if ([textStart isKindOfClass:[UIColor class]]) item[@"detectedColorStart"] = textStart;
+    if ([textEnd isKindOfClass:[UIColor class]]) item[@"detectedColorEnd"] = textEnd;
+    if ([bgStart isKindOfClass:[UIColor class]]) item[@"detectedBackgroundColorStart"] = bgStart;
+    if ([bgEnd isKindOfClass:[UIColor class]]) item[@"detectedBackgroundColorEnd"] = bgEnd;
+    if ([bgInsets isKindOfClass:[NSValue class]]) item[@"detectedBackgroundInsets"] = bgInsets;
+    if ([bgCornerRadius isKindOfClass:[NSNumber class]]) item[@"detectedBackgroundCornerRadius"] = bgCornerRadius;
 }
 
 static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(void) {
@@ -2415,26 +2580,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                     } mutableCopy];
 
                     TOTranslationManager *styleSettings = [TOTranslationManager shared];
-                    BOOL smartText = (styleSettings.smartCompatibilityEnabled && styleSettings.ocrAutoColorEnabled);
-                    BOOL smartBg = (styleSettings.smartCompatibilityEnabled && styleSettings.ocrBackgroundAutoColorEnabled);
-                    if (smartText || smartBg) {
-                        NSDictionary *smartStyle = [self smartStyleForImage:image textRect:rect textColor:(autoColor ?: UIColor.whiteColor) backgroundColor:(autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0]) needsText:smartText needsBackground:smartBg];
-                        if ([smartStyle isKindOfClass:[NSDictionary class]]) {
-                            id textStart = smartStyle[@"textStart"];
-                            id textEnd = smartStyle[@"textEnd"];
-                            id bgStart = smartStyle[@"bgStart"];
-                            id bgEnd = smartStyle[@"bgEnd"];
-                            id bgInsets = smartStyle[@"bgInsets"];
-                            id bgCornerRadius = smartStyle[@"bgCornerRadius"];
-
-                            if ([textStart isKindOfClass:[UIColor class]]) item[@"detectedColorStart"] = textStart;
-                            if ([textEnd isKindOfClass:[UIColor class]]) item[@"detectedColorEnd"] = textEnd;
-                            if ([bgStart isKindOfClass:[UIColor class]]) item[@"detectedBackgroundColorStart"] = bgStart;
-                            if ([bgEnd isKindOfClass:[UIColor class]]) item[@"detectedBackgroundColorEnd"] = bgEnd;
-                            if ([bgInsets isKindOfClass:[NSValue class]]) item[@"detectedBackgroundInsets"] = bgInsets;
-                            if ([bgCornerRadius isKindOfClass:[NSNumber class]]) item[@"detectedBackgroundCornerRadius"] = bgCornerRadius;
-                        }
-                    }
+                    [self applySmartCompatibilityStyleToItem:item image:image settings:styleSettings];
 
                     [items addObject:item];
                 }
@@ -2442,6 +2588,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 
             if (items.count > 1) {
                 items = [[self mergedMangaBlocksFromItems:items] mutableCopy];
+            }
+
+            TOTranslationManager *postMergeStyleSettings = [TOTranslationManager shared];
+            if (postMergeStyleSettings.smartCompatibilityEnabled && (postMergeStyleSettings.ocrAutoColorEnabled || postMergeStyleSettings.ocrBackgroundAutoColorEnabled)) {
+                for (NSMutableDictionary *item in items) {
+                    [self applySmartCompatibilityStyleToItem:item image:image settings:postMergeStyleSettings];
+                }
             }
 
             if (items.count == 0) {
@@ -2523,26 +2676,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                         } mutableCopy];
 
                         TOTranslationManager *styleSettings = [TOTranslationManager shared];
-                        BOOL smartText = (styleSettings.smartCompatibilityEnabled && styleSettings.ocrAutoColorEnabled);
-                        BOOL smartBg = (styleSettings.smartCompatibilityEnabled && styleSettings.ocrBackgroundAutoColorEnabled);
-                        if (smartText || smartBg) {
-                            NSDictionary *smartStyle = [self smartStyleForImage:image textRect:rect textColor:(autoColor ?: UIColor.whiteColor) backgroundColor:(autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0]) needsText:smartText needsBackground:smartBg];
-                            if ([smartStyle isKindOfClass:[NSDictionary class]]) {
-                                id textStart = smartStyle[@"textStart"];
-                                id textEnd = smartStyle[@"textEnd"];
-                                id bgStart = smartStyle[@"bgStart"];
-                                id bgEnd = smartStyle[@"bgEnd"];
-                                id bgInsets = smartStyle[@"bgInsets"];
-                                id bgCornerRadius = smartStyle[@"bgCornerRadius"];
-
-                                if ([textStart isKindOfClass:[UIColor class]]) item[@"detectedColorStart"] = textStart;
-                                if ([textEnd isKindOfClass:[UIColor class]]) item[@"detectedColorEnd"] = textEnd;
-                                if ([bgStart isKindOfClass:[UIColor class]]) item[@"detectedBackgroundColorStart"] = bgStart;
-                                if ([bgEnd isKindOfClass:[UIColor class]]) item[@"detectedBackgroundColorEnd"] = bgEnd;
-                                if ([bgInsets isKindOfClass:[NSValue class]]) item[@"detectedBackgroundInsets"] = bgInsets;
-                                if ([bgCornerRadius isKindOfClass:[NSNumber class]]) item[@"detectedBackgroundCornerRadius"] = bgCornerRadius;
-                            }
-                        }
+                        [self applySmartCompatibilityStyleToItem:item image:image settings:styleSettings];
 
                         [items addObject:item];
                     }
@@ -2552,6 +2686,11 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
             TOTranslationManager *settings = [TOTranslationManager shared];
             if (settings.mangaTranslationModeEnabled && items.count > 1) {
                 items = [[self mergedMangaBlocksFromItems:items] mutableCopy];
+                if (settings.smartCompatibilityEnabled && (settings.ocrAutoColorEnabled || settings.ocrBackgroundAutoColorEnabled)) {
+                    for (NSMutableDictionary *item in items) {
+                        [self applySmartCompatibilityStyleToItem:item image:image settings:settings];
+                    }
+                }
             }
 
             if (items.count == 0) {
