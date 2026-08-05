@@ -1001,10 +1001,10 @@ static void TOWarmupUILocalization(void) {
     dispatch_once(&onceToken, ^{
         phrases = @[
             @"إعدادات الترجمة", @"الترجمه من و إلى", @"إعدادات OCR", @"أخرى", @"صفحة المطور",
-            @"الترجمه من", @"الترجمة إلى", @"اختيار لغة المصدر", @"اختيار لغة الهدف", @"إعدادات مظهر OCR", @"تغيير حجم نص OCR",
+            @"الترجمه من", @"الترجمة إلى", @"اختيار لغة المصدر", @"اختيار لغة الهدف", @"إعدادات مظهر الترجمة", @"حجم النص Aa",
             @"نمط الترجمه", @"ترجمة التطبيق", @"زر نمط ترجمة المانجا", @"زر نمط الترجمه المباشره",
             @"تم تفعيل نمط الترجمه المباشره", @"تم إيقاف نمط الترجمه المباشره", @"تم تفعيل نمط ترجمة المانجا", @"تم تفعيل ترجمة التطبيق",
-            @"تنسيق النص: توسيط داخل الموضع", @"تحرير النص بعد ترجمة OCR", @"نمط ترجمة المانجا",
+            @"توسيط النص", @"ميزة تحرير النص", @"نمط ترجمة المانجا",
             @"إعدادات لون النص", @"إعدادات لون الخلفية", @"تفعيل اللون التلقائي للنص", @"تعطيل اللون التلقائي للنص",
             @"تفعيل اللون التلقائي لخلفية النص", @"تعطيل اللون التلقائي لخلفية النص",
             @"لون النص: الدرجة اللونية", @"لون النص: التشبع", @"لون الخلفية: الدرجة اللونية",
@@ -2335,7 +2335,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 44, self.view.bounds.size.width - 120, 28)];
     title.autoresizingMask = UIViewAutoresizingFlexibleWidth;
-    title.text = @"إعدادات مظهر OCR";
+    title.text = @"إعدادات مظهر الترجمة";
     title.textColor = UIColor.whiteColor;
     title.font = [UIFont boldSystemFontOfSize:20];
     [self.view addSubview:title];
@@ -2572,8 +2572,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 
     UIView *ocrCard = [self sectionCardWithTitle:@"إعدادات OCR" y:242 height:182];
     [ocrCard addSubview:[self sectionButtonWithTitle:@"ترجمة الصفحة OCR" y:44 action:@selector(startOCRPressed)]];
-    [ocrCard addSubview:[self sectionButtonWithTitle:@"إعدادات مظهر OCR" y:88 action:@selector(appearancePressed)]];
-    [ocrCard addSubview:[self sectionButtonWithTitle:@"تغيير حجم نص OCR" y:132 action:@selector(sizePressed)]];
+    [ocrCard addSubview:[self sectionButtonWithTitle:@"إعدادات مظهر الترجمة" y:88 action:@selector(appearancePressed)]];
+    [ocrCard addSubview:[self sectionButtonWithTitle:@"حجم النص Aa" y:132 action:@selector(sizePressed)]];
     [self.view addSubview:ocrCard];
 
     UIView *otherCard = [self sectionCardWithTitle:@"أخرى" y:436 height:94];
@@ -2965,7 +2965,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     UIViewController *top = TOTopViewController();
     if (!top) return;
 
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TOUIString(@"إعدادات مظهر OCR")
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TOUIString(@"إعدادات مظهر الترجمة")
                                                                    message:TOUIString(@"تخصيص لون النص والخلفية")
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
 
@@ -3842,18 +3842,18 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                                                                            message:nil
                                                                     preferredStyle:UIAlertControllerStyleActionSheet];
 
-        NSString *centerTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"تنسيق النص: توسيط داخل الموضع"), (tm.ocrCenterTextEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))];
+        NSString *centerTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"توسيط النص"), (tm.ocrCenterTextEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))];
         [ocrSheet addAction:[UIAlertAction actionWithTitle:centerTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
             tm.ocrCenterTextEnabled = !tm.ocrCenterTextEnabled;
             [tm saveSettings];
-            [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"تنسيق النص: توسيط داخل الموضع"), (tm.ocrCenterTextEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))]];
+            [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"توسيط النص"), (tm.ocrCenterTextEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))]];
         }]];
 
-        NSString *editTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"تحرير النص بعد ترجمة OCR"), (tm.ocrEditAfterTranslateEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))];
+        NSString *editTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"ميزة تحرير النص"), (tm.ocrEditAfterTranslateEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))];
         [ocrSheet addAction:[UIAlertAction actionWithTitle:editTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
             tm.ocrEditAfterTranslateEnabled = !tm.ocrEditAfterTranslateEnabled;
             [tm saveSettings];
-            [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"تحرير النص بعد ترجمة OCR"), (tm.ocrEditAfterTranslateEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))]];
+            [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"ميزة تحرير النص"), (tm.ocrEditAfterTranslateEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))]];
         }]];
 
         NSString *modeTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"نمط الترجمه"), TOTranslationModeLabel((TOTranslationTapMode)tm.translationTapMode)];
@@ -3877,8 +3877,8 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             [self showReplacementWordsSettings];
         }]];
 
-        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"إعدادات مظهر OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRAppearanceSettings]; }]];
-        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"تغيير حجم نص OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRTextSizePicker]; }]];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"إعدادات مظهر الترجمة") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRAppearanceSettings]; }]];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"حجم النص Aa") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRTextSizePicker]; }]];
 
         [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"مسح الذاكرة المؤقته") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
             UIViewController *confirmTop = TOTopViewController();
