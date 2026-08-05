@@ -845,7 +845,7 @@ static void TOWarmupUILocalization(void) {
             @"تم", @"إغلاق", @"حفظ", @"تحرير", @"تحرير نص OCR", @"حجم نص OCR", @"نتيجة OCR", @"المصدر", @"الهدف",
             @"جارٍ التقاط الصفحة وتحليلها...", @"تمت محاولة الترجمة",
             @"زمن تأخير الترجمة المباشره", @"ادخل الزمن بالمللي ثانية", @"تم ضبط زمن التأخير",
-            @"تحرير ترجمة الترجمه المباشره", @"فعّل تحرير النص بعد ترجمة OCR أولاً", @"لا يوجد نص مباشر لتحريره الآن"
+            @"تحرير الترجمه المباشره", @"فعّل تحرير النص بعد ترجمة OCR أولاً", @"لا يوجد نص مباشر لتحريره الآن"
         ];
     });
 
@@ -2081,6 +2081,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)translateCurrentPageWithToast:(BOOL)showToast;
 - (void)showTranslationModeSettings;
 - (void)showLiveTranslationEditor;
+- (void)showLiveTranslationEditorFromSettingsView:(UIView *)settingsView;
 - (void)handleScrollActivity;
 - (void)beginLiveScrollInteraction;
 - (void)beginLiveTouchInteraction;
@@ -3225,10 +3226,6 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         }]];
     }
 
-    [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", TOUIString(@"تحرير ترجمة الترجمه المباشره")] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-        [self showLiveTranslationEditor];
-    }]];
-
     [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
     [self configurePopover:sheet];
     [top presentViewController:sheet animated:YES completion:^{
@@ -3237,55 +3234,105 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 }
 
 - (void)showLiveTranslationEditor {
+    [self showLiveTranslationEditorFromSettingsView:nil];
+}
+
+- (void)showLiveTranslationEditorFromSettingsView:(UIView *)settingsView {
     TOTranslationManager *m = [TOTranslationManager shared];
     if (!m.ocrEditAfterTranslateEnabled) {
         [self showToast:TOUIString(@"فعّل تحرير النص بعد ترجمة OCR أولاً")];
         return;
     }
 
-    NSArray<NSMutableDictionary *> *items = self.liveLastTranslatedItems;
-    UIImage *base = self.liveLastBaseImage;
-    if (items.count == 0 || !base) {
+    UIWindow *w = self.attachedWindow ?: TOActiveWindow();
+    if (!w) {
         [self showToast:TOUIString(@"لا يوجد نص مباشر لتحريره الآن")];
         return;
     }
 
-    TOOCRResultsViewController *vc = [TOOCRResultsViewController new];
-    vc.modalPresentationStyle = UIModalPresentationFullScreen;
-    vc.baseImage = base;
-    vc.items = TODeepMutableCopyOCRItems(items);
-    vc.screenshot = [[TOPageOCRController shared] renderTranslatedTextOnImage:base items:vc.items];
-
     self.liveEditorSessionActive = YES;
     self.liveTouchActive = NO;
 
+    BOOL shouldRestoreSettingsView = NO;
+    if (settingsView && !settingsView.hidden && settingsView.window == w) {
+        [CATransaction begin];
+        [CATransaction setDisableActions:YES];
+        settingsView.hidden = YES;
+        [CATransaction commit];
+        shouldRestoreSettingsView = YES;
+    }
+
     __weak typeof(self) weakSelf = self;
-    vc.onItemsChanged = ^(NSArray<NSMutableDictionary *> *updatedItems, UIImage *renderedImage) {
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.016 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
         __strong typeof(weakSelf) self = weakSelf;
         if (!self) return;
 
-        self.liveLastTranslatedItems = TODeepMutableCopyOCRItems(updatedItems);
-        [[TOTranslationManager shared] applyLiveCorrectionsFromItems:updatedItems];
+        NSMutableArray<UIView *> *excluded = [NSMutableArray array];
+        if (self.liveOverlayView.superview == w) [excluded addObject:self.liveOverlayView];
+        if (self.floatingButton.superview == w) [excluded addObject:self.floatingButton];
+        if (settingsView && settingsView.window == w) [excluded addObject:settingsView];
 
-        if (renderedImage) {
-            self.liveOverlayView.image = renderedImage;
-            self.liveOverlayView.hidden = NO;
+        [[TOPageOCRController shared] buildLiveTranslatedOverlayForWindow:w excludingViews:excluded completion:^(UIImage *resultImage, UIImage *baseImage, NSArray<NSMutableDictionary *> *translatedItems) {
+            __strong typeof(weakSelf) self = weakSelf;
+            if (!self) return;
+
+            NSArray<NSMutableDictionary *> *items = translatedItems.count > 0 ? translatedItems : self.liveLastTranslatedItems;
+            UIImage *base = baseImage ?: self.liveLastBaseImage;
+
+            if (items.count == 0 || !base) {
+                self.liveEditorSessionActive = NO;
+                [self showToast:TOUIString(@"لا يوجد نص مباشر لتحريره الآن")];
+                return;
+            }
+
+            self.liveLastBaseImage = base;
+            self.liveLastTranslatedItems = TODeepMutableCopyOCRItems(items);
+
+            TOOCRResultsViewController *vc = [TOOCRResultsViewController new];
+            vc.modalPresentationStyle = UIModalPresentationFullScreen;
+            vc.baseImage = base;
+            vc.items = TODeepMutableCopyOCRItems(items);
+            vc.screenshot = resultImage ?: [[TOPageOCRController shared] renderTranslatedTextOnImage:base items:vc.items];
+
+            vc.onItemsChanged = ^(NSArray<NSMutableDictionary *> *updatedItems, UIImage *renderedImage) {
+                __strong typeof(weakSelf) self = weakSelf;
+                if (!self) return;
+
+                self.liveLastTranslatedItems = TODeepMutableCopyOCRItems(updatedItems);
+                [[TOTranslationManager shared] applyLiveCorrectionsFromItems:updatedItems];
+
+                if (renderedImage) {
+                    self.liveOverlayView.image = renderedImage;
+                    self.liveOverlayView.hidden = NO;
+                }
+            };
+
+            vc.onDismiss = ^{
+                __strong typeof(weakSelf) self = weakSelf;
+                if (!self) return;
+                self.liveEditorSessionActive = NO;
+                TOTranslationManager *inner = [TOTranslationManager shared];
+                if (inner.translationTapMode == TOTranslationTapModeLive && self.liveTranslateEnabled) {
+                    self.liveScrollPendingRefresh = YES;
+                    [self requestLiveOCROverlayRefresh];
+                }
+            };
+
+            UIViewController *top = TOTopViewController();
+            if (top) {
+                [top presentViewController:vc animated:YES completion:nil];
+            } else {
+                self.liveEditorSessionActive = NO;
+            }
+        }];
+
+        if (shouldRestoreSettingsView && settingsView.window == w) {
+            [CATransaction begin];
+            [CATransaction setDisableActions:YES];
+            settingsView.hidden = NO;
+            [CATransaction commit];
         }
-    };
-
-    vc.onDismiss = ^{
-        __strong typeof(weakSelf) self = weakSelf;
-        if (!self) return;
-        self.liveEditorSessionActive = NO;
-        TOTranslationManager *inner = [TOTranslationManager shared];
-        if (inner.translationTapMode == TOTranslationTapModeLive && self.liveTranslateEnabled) {
-            self.liveScrollPendingRefresh = YES;
-            [self requestLiveOCROverlayRefresh];
-        }
-    };
-
-    UIViewController *top = TOTopViewController();
-    if (top) [top presentViewController:vc animated:YES completion:nil];
+    });
 }
 
 - (void)showLiveTouchResumeDelaySettings {
@@ -3424,6 +3471,10 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         NSString *delayTitle = [NSString stringWithFormat:@"%@ (%dms) ▸", TOUIString(@"زمن تأخير الترجمة المباشره"), (int)delayMs];
         [ocrSheet addAction:[UIAlertAction actionWithTitle:delayTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
             [self showLiveTouchResumeDelaySettings];
+        }]];
+
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", TOUIString(@"تحرير الترجمه المباشره")] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [self showLiveTranslationEditorFromSettingsView:ocrSheet.view];
         }]];
 
         [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"إعدادات مظهر OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRAppearanceSettings]; }]];
