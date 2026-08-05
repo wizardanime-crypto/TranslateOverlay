@@ -133,10 +133,30 @@ static const void *kTOTranslateGuardKey = &kTOTranslateGuardKey;
 static const void *kTOTranslateLastTextKey = &kTOTranslateLastTextKey;
 static const void *kTOTranslateLastTargetKey = &kTOTranslateLastTargetKey;
 static const void *kTOTranslateLastAttemptTimeKey = &kTOTranslateLastAttemptTimeKey;
+static const void *kTOTranslationSkipKey = &kTOTranslationSkipKey;
 static IMP kTOUIListSetTextOriginalIMP = NULL;
 static IMP kTOUIListSetSecondaryTextOriginalIMP = NULL;
 static IMP kTOUIListSetAttributedTextOriginalIMP = NULL;
 static IMP kTOUIListSetAttributedSecondaryTextOriginalIMP = NULL;
+
+static BOOL TOShouldSkipUITranslationForObject(id object) {
+    if (!object) return NO;
+    if ([objc_getAssociatedObject(object, kTOTranslationSkipKey) boolValue]) return YES;
+
+    if ([object isKindOfClass:[UIView class]]) {
+        UIView *view = (UIView *)object;
+        for (UIView *parent = view.superview; parent; parent = parent.superview) {
+            if ([objc_getAssociatedObject(parent, kTOTranslationSkipKey) boolValue]) return YES;
+        }
+        UIResponder *responder = view.nextResponder;
+        while (responder) {
+            if ([objc_getAssociatedObject(responder, kTOTranslationSkipKey) boolValue]) return YES;
+            responder = responder.nextResponder;
+        }
+    }
+
+    return NO;
+}
 
 static BOOL TOIsUITranslationPipelineEnabled(void) {
     // Keep hook-based UI translation exclusive to normal mode.
@@ -154,6 +174,7 @@ static NSAttributedString *TORebuildAttributedString(NSAttributedString *source,
 static void TOTranslateAndApplyTextToObject(id object, NSString *text, void (^applyBlock)(NSString *translated)) {
     if (!object || !applyBlock || !TOShouldTranslateText(text)) return;
     if (!TOIsUITranslationPipelineEnabled()) return;
+    if (TOShouldSkipUITranslationForObject(object)) return;
 
     Class managerClass = NSClassFromString(@"TOTranslationManager");
     if (!managerClass || ![managerClass respondsToSelector:@selector(shared)]) return;
@@ -194,6 +215,7 @@ static void TOTranslateAndApplyTextToObject(id object, NSString *text, void (^ap
 static void TOTranslateAndApplyAttributedTextToObject(id object, NSAttributedString *attributedText, void (^applyBlock)(NSAttributedString *translated)) {
     if (!object || !applyBlock || attributedText.length == 0) return;
     if (!TOIsUITranslationPipelineEnabled()) return;
+    if (TOShouldSkipUITranslationForObject(object)) return;
     NSString *raw = attributedText.string ?: @"";
     if (!TOShouldTranslateText(raw)) return;
 
@@ -950,6 +972,7 @@ static NSString *TOTranslationModeLabel(TOTranslationTapMode mode) {
 
 static void TOTranslateViewTree(UIView *view) {
     if (!view || view.hidden || view.alpha <= 0.01) return;
+    if (TOShouldSkipUITranslationForObject(view)) return;
 
     if ([view isKindOfClass:[UILabel class]]) {
         UILabel *label = (UILabel *)view;
@@ -1036,6 +1059,7 @@ static void TOTranslateViewTree(UIView *view) {
 
 static void TOTranslateSingleViewNode(UIView *view) {
     if (!view || view.hidden || view.alpha <= 0.01) return;
+    if (TOShouldSkipUITranslationForObject(view)) return;
 
     if ([view isKindOfClass:[UILabel class]]) {
         UILabel *label = (UILabel *)view;
@@ -1080,6 +1104,7 @@ static void TOTranslateBarButtonItems(NSArray<UIBarButtonItem *> *items) {
 
 static void TOTranslateControllerMetadata(UIViewController *controller) {
     if (!controller) return;
+    if (TOShouldSkipUITranslationForObject(controller)) return;
 
     TOTranslateAndApplyTextToObject(controller, controller.title, ^(NSString *translated) {
         if (![[controller title] isEqualToString:translated]) [controller setTitle:translated];
@@ -1134,8 +1159,9 @@ static void TOTranslateControllerMetadata(UIViewController *controller) {
 
 static void TOTranslateControllerTree(UIViewController *controller) {
     if (!controller) return;
+    if (TOShouldSkipUITranslationForObject(controller)) return;
     dispatch_async(dispatch_get_main_queue(), ^{
-        if (!controller.view) return;
+        if (!controller.view || TOShouldSkipUITranslationForObject(controller)) return;
         TOTranslateViewTree(controller.view);
         TOTranslateControllerMetadata(controller);
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.18 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
@@ -1290,6 +1316,7 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 @property (nonatomic, copy) NSString *initialText;
 @property (nonatomic, copy) void (^onSave)(NSString *editedText);
 @property (nonatomic, strong) UITextView *textView;
+@property (nonatomic, assign) BOOL disableAutoUITranslation;
 @end
 
 @implementation TOOCRTextEditorViewController
@@ -1297,6 +1324,11 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 - (void)viewDidLoad {
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor colorWithWhite:0.08 alpha:1.0];
+
+    if (self.disableAutoUITranslation) {
+        objc_setAssociatedObject(self, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        objc_setAssociatedObject(self.view, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
 
     UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 44, self.view.bounds.size.width - 160, 28)];
     title.autoresizingMask = UIViewAutoresizingFlexibleWidth;
@@ -1333,6 +1365,9 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     tv.layer.cornerRadius = 12;
     tv.text = self.initialText ?: @"";
     self.textView = tv;
+    if (self.disableAutoUITranslation) {
+        objc_setAssociatedObject(tv, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
     [self.view addSubview:tv];
 }
 
@@ -3533,6 +3568,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"تحرير متعدد (سطر لكل كلمة)") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
         TOOCRTextEditorViewController *editor = [TOOCRTextEditorViewController new];
         editor.modalPresentationStyle = UIModalPresentationFullScreen;
+        editor.disableAutoUITranslation = YES;
 
         NSArray<NSString *> *keys = @[];
         @synchronized (m) {
