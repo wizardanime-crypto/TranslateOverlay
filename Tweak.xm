@@ -1503,11 +1503,12 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     [super viewDidLoad];
     self.view.backgroundColor = [UIColor colorWithWhite:0.06 alpha:1.0];
 
-    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(16, 44, self.view.bounds.size.width - 120, 28)];
+    UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(0, 44, self.view.bounds.size.width, 28)];
     title.autoresizingMask = UIViewAutoresizingFlexibleWidth;
     title.text = @"نتيجة OCR";
     title.textColor = UIColor.whiteColor;
     title.font = [UIFont boldSystemFontOfSize:20];
+    title.textAlignment = NSTextAlignmentCenter;
     [self.view addSubview:title];
 
     UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
