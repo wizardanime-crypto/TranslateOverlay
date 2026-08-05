@@ -31,6 +31,7 @@ static NSString * const kTOOCRBackgroundHueKey = @"to_ocr_background_hue";
 static NSString * const kTOOCRBackgroundSaturationKey = @"to_ocr_background_saturation";
 static NSString * const kTOOCRBackgroundBrightnessKey = @"to_ocr_background_brightness";
 static NSString * const kTOLiveTouchResumeDelayKey = @"to_live_touch_resume_delay";
+static NSString * const kTOLiveOCRCorrectionsKey = @"to_live_ocr_corrections";
 
 @class TOTranslationManager;
 
@@ -107,6 +108,15 @@ static NSString *TOPrepareLiveOCRSourceText(NSString *text) {
     while ([normalized containsString:@" ?"]) normalized = [normalized stringByReplacingOccurrencesOfString:@" ?" withString:@"?"];
 
     return normalized;
+}
+
+static NSMutableArray<NSMutableDictionary *> *TODeepMutableCopyOCRItems(NSArray<NSDictionary *> *items) {
+    NSMutableArray<NSMutableDictionary *> *copied = [NSMutableArray arrayWithCapacity:items.count];
+    for (NSDictionary *raw in items) {
+        if (![raw isKindOfClass:[NSDictionary class]]) continue;
+        [copied addObject:[raw mutableCopy]];
+    }
+    return copied;
 }
 
 static NSString *TONormalizedLocaleIdentifier(NSString *languageCode) {
@@ -380,6 +390,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 @property (nonatomic, strong) NSCache<NSString *, NSString *> *cache;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *persistentCache;
 @property (nonatomic, strong) NSMutableSet<NSString *> *inFlightTranslationKeys;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *liveOCRCorrections;
 
 @property (nonatomic, assign) CGFloat ocrTextScale;
 @property (nonatomic, assign) BOOL ocrAutoColorEnabled;
@@ -404,6 +415,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 - (UIColor *)ocrBackgroundUIColor;
 - (void)translateText:(NSString *)text completion:(void (^)(NSString *translated))completion;
 - (void)translateOCRText:(NSString *)text completion:(void (^)(NSString *translated))completion;
+- (void)applyLiveCorrectionsFromItems:(NSArray<NSDictionary *> *)items;
 @end
 
 @implementation TOTranslationManager
@@ -416,6 +428,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         m.cache = [NSCache new];
         m.persistentCache = [NSMutableDictionary new];
         m.inFlightTranslationKeys = [NSMutableSet new];
+        m.liveOCRCorrections = [NSMutableDictionary new];
         [m loadSettings];
     });
     return m;
@@ -431,6 +444,20 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         @synchronized (self) {
             [self.persistentCache removeAllObjects];
             [self.persistentCache addEntriesFromDictionary:stored];
+        }
+    }
+
+    NSDictionary *storedCorrections = [d dictionaryForKey:kTOLiveOCRCorrectionsKey];
+    if ([storedCorrections isKindOfClass:[NSDictionary class]]) {
+        @synchronized (self) {
+            [self.liveOCRCorrections removeAllObjects];
+            for (id key in storedCorrections) {
+                if (![key isKindOfClass:[NSString class]]) continue;
+                id value = storedCorrections[key];
+                if (![value isKindOfClass:[NSString class]]) continue;
+                if (((NSString *)value).length == 0) continue;
+                self.liveOCRCorrections[(NSString *)key] = (NSString *)value;
+            }
         }
     }
 
@@ -483,10 +510,13 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     [d setObject:self.sourceLanguage ?: @"auto" forKey:kTOSourceLanguageKey];
     [d setObject:self.targetLanguage ?: @"ar" forKey:kTOTargetLanguageKey];
     NSDictionary *cacheSnapshot = nil;
+    NSDictionary *correctionsSnapshot = nil;
     @synchronized (self) {
         cacheSnapshot = [self.persistentCache copy] ?: @{};
+        correctionsSnapshot = [self.liveOCRCorrections copy] ?: @{};
     }
     [d setObject:cacheSnapshot forKey:kTOTranslationCacheKey];
+    [d setObject:correctionsSnapshot forKey:kTOLiveOCRCorrectionsKey];
 
     [d setDouble:self.ocrTextScale forKey:kTOOCRTextScaleKey];
     [d setBool:self.ocrAutoColorEnabled forKey:kTOOCRTextAutoColorEnabledKey];
@@ -647,6 +677,17 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         return;
     }
 
+    NSString *target = self.targetLanguage ?: @"ar";
+    NSString *manualKey = [NSString stringWithFormat:@"%@|%@", target, prepared];
+    NSString *manual = nil;
+    @synchronized (self) {
+        manual = self.liveOCRCorrections[manualKey];
+    }
+    if (manual.length > 0) {
+        if (completion) completion(manual);
+        return;
+    }
+
     [self translateText:prepared completion:^(NSString *translated) {
         NSString *result = translated.length > 0 ? translated : prepared;
 
@@ -662,6 +703,45 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 
         if (completion) completion(result);
     }];
+}
+
+- (void)applyLiveCorrectionsFromItems:(NSArray<NSDictionary *> *)items {
+    if (items.count == 0) return;
+
+    NSString *target = self.targetLanguage ?: @"ar";
+    BOOL changed = NO;
+
+    @synchronized (self) {
+        for (NSDictionary *item in items) {
+            if (![item isKindOfClass:[NSDictionary class]]) continue;
+
+            NSString *source = item[@"source"];
+            NSString *translated = item[@"translated"];
+            NSString *prepared = TOPrepareLiveOCRSourceText(source ?: @"");
+            if (!TOShouldTranslateText(prepared)) continue;
+
+            NSString *cleanTranslated = [translated stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (cleanTranslated.length == 0 || [cleanTranslated isEqualToString:prepared]) continue;
+
+            NSString *key = [NSString stringWithFormat:@"%@|%@", target, prepared];
+            NSString *existing = self.liveOCRCorrections[key];
+            if (![existing isEqualToString:cleanTranslated]) {
+                self.liveOCRCorrections[key] = cleanTranslated;
+                changed = YES;
+            }
+        }
+
+        if (self.liveOCRCorrections.count > 800) {
+            NSArray<NSString *> *keys = self.liveOCRCorrections.allKeys;
+            NSUInteger toRemove = self.liveOCRCorrections.count - 800;
+            for (NSUInteger i = 0; i < toRemove && i < keys.count; i++) {
+                [self.liveOCRCorrections removeObjectForKey:keys[i]];
+            }
+            changed = YES;
+        }
+    }
+
+    if (changed) [self saveSettings];
 }
 
 @end
@@ -764,7 +844,8 @@ static void TOWarmupUILocalization(void) {
             @"لون الخلفية: التشبع", @"تعتيم الخلفية", @"تعتيم خلفية النص", @"رجوع", @"إلغاء",
             @"تم", @"إغلاق", @"حفظ", @"تحرير", @"تحرير نص OCR", @"حجم نص OCR", @"نتيجة OCR", @"المصدر", @"الهدف",
             @"جارٍ التقاط الصفحة وتحليلها...", @"تمت محاولة الترجمة",
-            @"مهلة استئناف الترجمه المباشره بعد اللمس", @"كلما زادت المهلة، يصبح التمرير أكثر سلاسة", @"تم ضبط مهلة الاستئناف"
+            @"مهلة استئناف الترجمه المباشره بعد اللمس", @"كلما زادت المهلة، يصبح التمرير أكثر سلاسة", @"تم ضبط مهلة الاستئناف",
+            @"تحرير ترجمة الترجمه المباشره", @"فعّل تحرير النص بعد ترجمة OCR أولاً", @"لا يوجد نص مباشر لتحريره الآن"
         ];
     });
 
@@ -1197,6 +1278,7 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 @property (nonatomic, strong) UIImage *baseImage;
 @property (nonatomic, strong) NSMutableArray<NSMutableDictionary *> *items;
 @property (nonatomic, strong) UIImageView *imageView;
+@property (nonatomic, copy) void (^onItemsChanged)(NSArray<NSMutableDictionary *> *items, UIImage *renderedImage);
 @end
 
 @implementation TOOCRResultsViewController
@@ -1292,6 +1374,7 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         if (!self) return;
         [self applyEditedPayload:editedText ?: @""];
         [self refreshRenderedImage];
+        if (self.onItemsChanged) self.onItemsChanged(self.items, self.imageView.image);
     };
     [self presentViewController:editor animated:YES completion:nil];
 }
@@ -1301,7 +1384,8 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 @interface TOPageOCRController : NSObject
 + (instancetype)shared;
 - (void)presentOCRForWindow:(UIWindow *)window completion:(void (^)(void))completion;
-- (void)buildLiveTranslatedOverlayForWindow:(UIWindow *)window excludingViews:(NSArray<UIView *> *)excludedViews completion:(void (^)(UIImage *resultImage))completion;
+- (void)buildLiveTranslatedOverlayForWindow:(UIWindow *)window excludingViews:(NSArray<UIView *> *)excludedViews completion:(void (^)(UIImage *resultImage, UIImage *baseImage, NSArray<NSMutableDictionary *> *translatedItems))completion;
+- (UIImage *)renderTranslatedTextOnImage:(UIImage *)image items:(NSArray<NSDictionary *> *)items;
 @end
 
 @implementation TOPageOCRController
@@ -1764,10 +1848,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
     return TORenderTranslatedTextOnImage(image, items);
 }
 
-- (void)buildLiveTranslatedOverlayForWindow:(UIWindow *)window excludingViews:(NSArray<UIView *> *)excludedViews completion:(void (^)(UIImage *resultImage))completion {
+- (void)buildLiveTranslatedOverlayForWindow:(UIWindow *)window excludingViews:(NSArray<UIView *> *)excludedViews completion:(void (^)(UIImage *resultImage, UIImage *baseImage, NSArray<NSMutableDictionary *> *translatedItems))completion {
     UIImage *image = [self captureScreenshot:window excludingViews:excludedViews ?: @[]];
     if (!image || !image.CGImage) {
-        if (completion) completion(nil);
+        if (completion) completion(nil, nil, nil);
         return;
     }
 
@@ -1790,14 +1874,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                 }
             }
 
-            TOTranslationManager *settings = [TOTranslationManager shared];
-            if (settings.mangaTranslationModeEnabled && items.count > 1) {
+            if (items.count > 1) {
                 items = [[self mergedMangaBlocksFromItems:items] mutableCopy];
             }
 
             if (items.count == 0) {
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    if (completion) completion(nil);
+                    if (completion) completion(nil, image, nil);
                 });
                 return;
             }
@@ -1817,7 +1900,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 
             dispatch_group_notify(g, dispatch_get_main_queue(), ^{
                 UIImage *rendered = [self renderTranslatedTextOnImage:image items:translated];
-                if (completion) completion(rendered);
+                if (completion) completion(rendered, image, translated);
             });
         }];
 
@@ -1840,12 +1923,12 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
             [handler performRequests:@[request] error:&err];
             if (err) {
                 dispatch_async(dispatch_get_main_queue(), ^{
-                    if (completion) completion(nil);
+                    if (completion) completion(nil, image, nil);
                 });
             }
         });
     } else {
-        if (completion) completion(nil);
+        if (completion) completion(nil, image, nil);
     }
 }
 
@@ -1971,6 +2054,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, assign) BOOL liveOCRInFlight;
 @property (nonatomic, assign) BOOL liveOCRNeedsRefresh;
 @property (nonatomic, assign) NSUInteger liveOCRGeneration;
+@property (nonatomic, strong) UIImage *liveLastBaseImage;
+@property (nonatomic, strong) NSMutableArray<NSMutableDictionary *> *liveLastTranslatedItems;
 @property (nonatomic, assign) NSTimeInterval liveScrollInteractionUntil;
 @property (nonatomic, assign) NSTimeInterval liveLastUIRefreshTime;
 @property (nonatomic, assign) NSTimeInterval liveLastOCRRefreshTime;
@@ -1990,6 +2075,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)translateCurrentPage;
 - (void)translateCurrentPageWithToast:(BOOL)showToast;
 - (void)showTranslationModeSettings;
+- (void)showLiveTranslationEditor;
 - (void)handleScrollActivity;
 - (void)beginLiveScrollInteraction;
 - (void)beginLiveTouchInteraction;
@@ -2610,6 +2696,10 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     }
 
     [m saveSettings];
+
+    if (m.translationTapMode == TOTranslationTapModeLive && self.liveTranslateEnabled) {
+        [self requestLiveOCROverlayRefresh];
+    }
 }
 
 - (void)showLanguagePicker:(BOOL)isSource {
@@ -2903,7 +2993,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     if (self.liveOverlayView.superview == w) [excluded addObject:self.liveOverlayView];
     if (self.floatingButton.superview == w) [excluded addObject:self.floatingButton];
 
-    [[TOPageOCRController shared] buildLiveTranslatedOverlayForWindow:w excludingViews:excluded completion:^(UIImage *resultImage) {
+    [[TOPageOCRController shared] buildLiveTranslatedOverlayForWindow:w excludingViews:excluded completion:^(UIImage *resultImage, UIImage *baseImage, NSArray<NSMutableDictionary *> *translatedItems) {
         self.liveOCRInFlight = NO;
         if (token != self.liveOCRGeneration) return;
 
@@ -2918,6 +3008,8 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             self.liveOverlayView.frame = w.bounds;
             self.liveOverlayView.image = resultImage;
             self.liveOverlayView.hidden = NO;
+            self.liveLastBaseImage = baseImage;
+            self.liveLastTranslatedItems = TODeepMutableCopyOCRItems(translatedItems);
             if (self.floatingButton.superview == w) {
                 [w insertSubview:self.liveOverlayView belowSubview:self.floatingButton];
                 [w bringSubviewToFront:self.floatingButton];
@@ -3069,6 +3161,8 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.liveOCRGeneration++;
         self.liveOCRNeedsRefresh = NO;
         self.liveOCRInFlight = NO;
+        self.liveLastBaseImage = nil;
+        self.liveLastTranslatedItems = nil;
         self.liveScrollPendingRefresh = NO;
         self.liveScrollActive = NO;
         self.liveLastScrollSignalTime = 0;
@@ -3127,11 +3221,53 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [self showLiveTouchResumeDelaySettings];
     }]];
 
+    [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", TOUIString(@"تحرير ترجمة الترجمه المباشره")] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        [self showLiveTranslationEditor];
+    }]];
+
     [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
     [self configurePopover:sheet];
     [top presentViewController:sheet animated:YES completion:^{
         TOTranslateControllerTree(sheet);
     }];
+}
+
+- (void)showLiveTranslationEditor {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    if (!m.ocrEditAfterTranslateEnabled) {
+        [self showToast:TOUIString(@"فعّل تحرير النص بعد ترجمة OCR أولاً")];
+        return;
+    }
+
+    NSArray<NSMutableDictionary *> *items = self.liveLastTranslatedItems;
+    UIImage *base = self.liveLastBaseImage;
+    if (items.count == 0 || !base) {
+        [self showToast:TOUIString(@"لا يوجد نص مباشر لتحريره الآن")];
+        return;
+    }
+
+    TOOCRResultsViewController *vc = [TOOCRResultsViewController new];
+    vc.modalPresentationStyle = UIModalPresentationFullScreen;
+    vc.baseImage = base;
+    vc.items = TODeepMutableCopyOCRItems(items);
+    vc.screenshot = [[TOPageOCRController shared] renderTranslatedTextOnImage:base items:vc.items];
+
+    __weak typeof(self) weakSelf = self;
+    vc.onItemsChanged = ^(NSArray<NSMutableDictionary *> *updatedItems, UIImage *renderedImage) {
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+
+        self.liveLastTranslatedItems = TODeepMutableCopyOCRItems(updatedItems);
+        [[TOTranslationManager shared] applyLiveCorrectionsFromItems:updatedItems];
+
+        if (renderedImage) {
+            self.liveOverlayView.image = renderedImage;
+            self.liveOverlayView.hidden = NO;
+        }
+    };
+
+    UIViewController *top = TOTopViewController();
+    if (top) [top presentViewController:vc animated:YES completion:nil];
 }
 
 - (void)showLiveTouchResumeDelaySettings {
