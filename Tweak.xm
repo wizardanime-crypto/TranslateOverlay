@@ -437,6 +437,8 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 + (instancetype)shared;
 - (void)loadSettings;
 - (void)saveSettings;
+- (void)clearTranslationCachesOnly;
+- (void)restoreFactoryDefaultsAndClearAllData;
 - (UIColor *)ocrManualUIColor;
 - (UIColor *)ocrBackgroundUIColor;
 - (void)translateText:(NSString *)text completion:(void (^)(NSString *translated))completion;
@@ -584,6 +586,81 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     [d setDouble:MIN(MAX(self.ocrBackgroundSaturation, 0.0), 1.0) forKey:kTOOCRBackgroundSaturationKey];
     [d setDouble:MIN(MAX(self.ocrBackgroundBrightness, 0.0), 1.0) forKey:kTOOCRBackgroundBrightnessKey];
     [d setDouble:MIN(MAX(self.liveTouchResumeDelay, 0.0), 5.0) forKey:kTOLiveTouchResumeDelayKey];
+    [d synchronize];
+}
+
+- (void)clearTranslationCachesOnly {
+    @synchronized (self) {
+        [self.persistentCache removeAllObjects];
+        [self.inFlightTranslationKeys removeAllObjects];
+    }
+    [self.cache removeAllObjects];
+
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    [d removeObjectForKey:kTOTranslationCacheKey];
+    [d synchronize];
+}
+
+- (void)restoreFactoryDefaultsAndClearAllData {
+    @synchronized (self) {
+        [self.persistentCache removeAllObjects];
+        [self.inFlightTranslationKeys removeAllObjects];
+        [self.liveOCRCorrections removeAllObjects];
+        [self.replacementWordsMap removeAllObjects];
+    }
+    [self.cache removeAllObjects];
+
+    self.sourceLanguage = @"auto";
+    self.targetLanguage = @"ar";
+    self.replacementWordsEnabled = NO;
+
+    self.ocrTextScale = 1.0;
+    self.ocrAutoColorEnabled = YES;
+    self.ocrBackgroundAutoColorEnabled = NO;
+    self.ocrCenterTextEnabled = YES;
+    self.ocrEditAfterTranslateEnabled = YES;
+    self.mangaTranslationModeEnabled = NO;
+    self.translationTapMode = TOTranslationTapModeNormal;
+    self.ocrManualHue = 0.14;
+    self.ocrManualSaturation = 0.75;
+    self.ocrManualBrightness = 1.0;
+    self.ocrBackgroundAlpha = 0.65;
+    self.ocrBackgroundHue = 0.0;
+    self.ocrBackgroundSaturation = 0.0;
+    self.ocrBackgroundBrightness = 0.28;
+    self.liveTouchResumeDelay = 0.20;
+
+    TOUpdateTranslationModeSnapshot(self.translationTapMode, NO);
+
+    NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
+    NSArray<NSString *> *keys = @[
+        kTOSourceLanguageKey,
+        kTOTargetLanguageKey,
+        kTOButtonCenterXKey,
+        kTOButtonCenterYKey,
+        kTOTranslationCacheKey,
+        kTOOCRTextScaleKey,
+        kTOOCRTextAutoColorEnabledKey,
+        kTOOCRBackgroundAutoColorEnabledKey,
+        kTOOCRCenterTextEnabledKey,
+        kTOOCREditAfterTranslateEnabledKey,
+        kTOMangaTranslationModeEnabledKey,
+        kTOTranslationTapModeKey,
+        kTOOCRManualHueKey,
+        kTOOCRManualSaturationKey,
+        kTOOCRManualBrightnessKey,
+        kTOOCRBackgroundAlphaKey,
+        kTOOCRBackgroundHueKey,
+        kTOOCRBackgroundSaturationKey,
+        kTOOCRBackgroundBrightnessKey,
+        kTOLiveTouchResumeDelayKey,
+        kTOLiveOCRCorrectionsKey,
+        kTOReplacementWordsEnabledKey,
+        kTOReplacementWordsMapKey
+    ];
+    for (NSString *key in keys) {
+        [d removeObjectForKey:key];
+    }
     [d synchronize];
 }
 
@@ -941,7 +1018,9 @@ static void TOWarmupUILocalization(void) {
             @"تحرير متعدد (سطر لكل كلمة)", @"الصيغة: الأصلية - البديلة", @"تحرير الكلمات البديله", @"تم حفظ الكلمات البديله", @"عدد الكلمات البديله",
             @"مفعل", @"معطل", @"لا توجد كلمات بديله", @"اختر كلمة لحذفها أو احذف الكل", @"تم حذف الكلمة البديله",
             @"تحديد الكل للحذف", @"تأكيد", @"سيتم حذف جميع الكلمات البديله", @"حذف", @"تم حذف جميع الكلمات البديله",
-            @"تأكيد الحذف", @"هل أنت متأكد من حذف هذه الكلمة؟", @"نعم", @"لا"
+            @"تأكيد الحذف", @"هل أنت متأكد من حذف هذه الكلمة؟", @"نعم", @"لا",
+            @"مسح الذاكرة المؤقته", @"تم مسح الذاكرة المؤقته", @"هل تريد مسح الذاكرة المؤقته؟",
+            @"استعادة ضبط المصنع", @"تمت استعادة ضبط المصنع", @"هل أنت متأكد من استعادة ضبط المصنع؟ سيتم حذف كل البيانات المخزنة."
         ];
     });
 
@@ -3826,6 +3905,52 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         NSString *replacementTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"الكلمات البديله"), (innerTM.replacementWordsEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))];
         [ocrSheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", replacementTitle] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
             [self showReplacementWordsSettings];
+        }]];
+
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"مسح الذاكرة المؤقته") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
+            UIViewController *confirmTop = TOTopViewController();
+            if (!confirmTop) return;
+
+            UIAlertController *confirm = [UIAlertController alertControllerWithTitle:TOUIString(@"تأكيد")
+                                                                              message:TOUIString(@"هل تريد مسح الذاكرة المؤقته؟")
+                                                                       preferredStyle:UIAlertControllerStyleAlert];
+            [confirm addAction:[UIAlertAction actionWithTitle:TOUIString(@"لا") style:UIAlertActionStyleCancel handler:nil]];
+            [confirm addAction:[UIAlertAction actionWithTitle:TOUIString(@"نعم") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *confirmAction) {
+                TOTranslationManager *manager = TOTranslationManager.shared;
+                [manager clearTranslationCachesOnly];
+                [self showToast:TOUIString(@"تم مسح الذاكرة المؤقته")];
+            }]];
+
+            [confirmTop presentViewController:confirm animated:YES completion:^{
+                TOTranslateControllerTree(confirm);
+            }];
+        }]];
+
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"استعادة ضبط المصنع") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
+            UIViewController *confirmTop = TOTopViewController();
+            if (!confirmTop) return;
+
+            UIAlertController *confirm = [UIAlertController alertControllerWithTitle:TOUIString(@"تأكيد")
+                                                                              message:TOUIString(@"هل أنت متأكد من استعادة ضبط المصنع؟ سيتم حذف كل البيانات المخزنة.")
+                                                                       preferredStyle:UIAlertControllerStyleAlert];
+            [confirm addAction:[UIAlertAction actionWithTitle:TOUIString(@"لا") style:UIAlertActionStyleCancel handler:nil]];
+            [confirm addAction:[UIAlertAction actionWithTitle:TOUIString(@"نعم") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *confirmAction) {
+                TOTranslationManager *manager = TOTranslationManager.shared;
+                [manager restoreFactoryDefaultsAndClearAllData];
+
+                self.liveTranslateEnabled = NO;
+                self.liveEditorSessionActive = NO;
+                [self removeLiveOverlayIfNeeded];
+                [self syncLiveTranslationLoopState];
+                [self syncAppTranslationLoopState];
+                [self applySavedPosition];
+
+                [self showToast:TOUIString(@"تمت استعادة ضبط المصنع")];
+            }]];
+
+            [confirmTop presentViewController:confirm animated:YES completion:^{
+                TOTranslateControllerTree(confirm);
+            }];
         }]];
 
         [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"إعدادات مظهر OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRAppearanceSettings]; }]];
