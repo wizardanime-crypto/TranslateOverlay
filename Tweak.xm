@@ -2263,6 +2263,9 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                 vc.screenshot = rendered;
                 vc.baseImage = image;
                 vc.items = translated;
+                vc.onItemsChanged = ^(NSArray<NSMutableDictionary *> *updatedItems, __unused UIImage *renderedImage) {
+                    [[TOTranslationManager shared] applyLiveCorrectionsFromItems:updatedItems];
+                };
                 [TOTopViewController() presentViewController:vc animated:YES completion:completion];
             });
         }];
@@ -2356,6 +2359,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)showReplacementWordsSettings;
 - (void)showReplacementWordsEditor;
 - (void)syncLiveTranslationLoopState;
+- (void)clearTemporaryOCREdits;
 - (void)liveTranslationTimerFired;
 - (void)scheduleLiveTranslationBurst;
 - (void)scheduleLiveRefreshAfterScrollSettled;
@@ -2710,6 +2714,11 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     [UIView animateWithDuration:0.2 animations:^{ toast.alpha = 1; } completion:^(__unused BOOL f) {
         [UIView animateWithDuration:0.25 delay:1.2 options:UIViewAnimationOptionCurveEaseInOut animations:^{ toast.alpha = 0; } completion:^(__unused BOOL ff) { [toast removeFromSuperview]; }];
     }];
+}
+
+- (void)clearTemporaryOCREdits {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    [m clearAllLiveCorrections];
 }
 
 - (CGPoint)clampedCenter:(CGPoint)c inWindow:(UIWindow *)window {
@@ -4041,6 +4050,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 }
 
 - (void)doubleTap {
+    [self clearTemporaryOCREdits];
     self.hiddenByDoubleTap = YES;
     self.floatingButton.hidden = YES;
     [self showToast:@"تم إخفاء الأداة. انقر 3 مرات لإظهارها"];
@@ -4541,6 +4551,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             }];
             [[NSNotificationCenter defaultCenter] addObserverForName:UIWindowDidBecomeKeyNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(__unused NSNotification *note) {
                 [overlay installIfPossible];
+            }];
+            [[NSNotificationCenter defaultCenter] addObserverForName:UIApplicationDidEnterBackgroundNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(__unused NSNotification *note) {
+                [overlay clearTemporaryOCREdits];
             }];
             if (@available(iOS 13.0, *)) {
                 [[NSNotificationCenter defaultCenter] addObserverForName:UISceneDidActivateNotification object:nil queue:[NSOperationQueue mainQueue] usingBlock:^(__unused NSNotification *note) {
