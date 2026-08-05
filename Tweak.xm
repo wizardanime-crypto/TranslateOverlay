@@ -1356,19 +1356,19 @@ static void TODrawVerticalGradient(CGContextRef ctx, CGRect rect, UIColor *start
     CGGradientRelease(gradient);
 }
 
-static BOOL TODrawGradientText(UIImage *baseImage,
-                               NSString *text,
-                               CGRect drawRect,
-                               NSDictionary *attrs,
-                               UIColor *startColor,
-                               UIColor *endColor) {
-    if (!baseImage || text.length == 0 || CGRectIsEmpty(drawRect) || !attrs || !startColor || !endColor) return NO;
+static BOOL TODrawGradientText(NSString *text,
+                                         CGRect drawRect,
+                                         NSDictionary *attrs,
+                                         UIColor *startColor,
+                                         UIColor *endColor) {
+     if (text.length == 0 || CGRectIsEmpty(drawRect) || !attrs || !startColor || !endColor) return NO;
 
-    CGSize canvas = baseImage.size;
-    UIGraphicsBeginImageContextWithOptions(canvas, NO, baseImage.scale);
+     CGSize maskSize = CGSizeMake(MAX(1.0, ceil(drawRect.size.width)), MAX(1.0, ceil(drawRect.size.height)));
+     CGRect localRect = CGRectMake(0, 0, maskSize.width, maskSize.height);
+     UIGraphicsBeginImageContextWithOptions(maskSize, NO, 0);
     NSMutableDictionary *maskAttrs = [attrs mutableCopy] ?: [NSMutableDictionary dictionary];
     maskAttrs[NSForegroundColorAttributeName] = UIColor.whiteColor;
-    [text drawWithRect:drawRect
+     [text drawWithRect:localRect
               options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
            attributes:maskAttrs
               context:nil];
@@ -1483,7 +1483,13 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 
         BOOL drewGradientText = NO;
         if (smartOn && m.ocrAutoColorEnabled && fgStart && fgEnd) {
-            drewGradientText = TODrawGradientText(image, text, drawRect, attrs, fgStart, fgEnd);
+            CGFloat sr = 0, sg = 0, sb = 0;
+            CGFloat er = 0, eg = 0, eb = 0;
+            BOOL hasS = TOGetRGBComponents(fgStart, &sr, &sg, &sb);
+            BOOL hasE = TOGetRGBComponents(fgEnd, &er, &eg, &eb);
+            if (hasS && hasE && TOColorDistance(sr, sg, sb, er, eg, eb) >= 0.028) {
+                drewGradientText = TODrawGradientText(text, drawRect, attrs, fgStart, fgEnd);
+            }
         }
         if (!drewGradientText) {
             [text drawWithRect:drawRect
@@ -2053,10 +2059,14 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 }
 
 - (NSDictionary *)smartStyleForImage:(UIImage *)image
-                             textRect:(CGRect)textRect
-                           textColor:(UIColor *)textColor
-                     backgroundColor:(UIColor *)backgroundColor {
+                     textRect:(CGRect)textRect
+                   textColor:(UIColor *)textColor
+               backgroundColor:(UIColor *)backgroundColor
+                    needsText:(BOOL)needsText
+                needsBackground:(BOOL)needsBackground {
     if (!image || CGRectIsEmpty(textRect)) return nil;
+
+    if (!needsText && !needsBackground) return nil;
 
     CGRect topHalf = CGRectMake(textRect.origin.x,
                                 textRect.origin.y,
@@ -2067,8 +2077,12 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
                                    textRect.size.width,
                                    MAX(1.0, textRect.size.height - topHalf.size.height));
 
-    UIColor *textStart = [self detectedTextColorInImage:image rect:topHalf] ?: textColor;
-    UIColor *textEnd = [self detectedTextColorInImage:image rect:bottomHalf] ?: textColor;
+    UIColor *textStart = textColor;
+    UIColor *textEnd = textColor;
+    if (needsText) {
+        textStart = [self detectedTextColorInImage:image rect:topHalf] ?: textColor;
+        textEnd = [self detectedTextColorInImage:image rect:bottomHalf] ?: textColor;
+    }
 
     CGRect bgProbe = CGRectInset(textRect, -12.0, -8.0);
     CGRect bgTop = CGRectMake(bgProbe.origin.x, bgProbe.origin.y, bgProbe.size.width, MAX(1.0, floor(bgProbe.size.height * 0.5)));
@@ -2077,12 +2091,16 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
                                  bgProbe.size.width,
                                  MAX(1.0, bgProbe.size.height - bgTop.size.height));
 
-    UIColor *bgStart = [self averageColorInImage:image rect:bgTop excludingColor:textColor minDistance:0.12] ?: backgroundColor;
-    UIColor *bgEnd = [self averageColorInImage:image rect:bgBottom excludingColor:textColor minDistance:0.12] ?: backgroundColor;
+    UIColor *bgStart = backgroundColor;
+    UIColor *bgEnd = backgroundColor;
+    if (needsBackground) {
+        bgStart = [self averageColorInImage:image rect:bgTop excludingColor:textColor minDistance:0.12] ?: backgroundColor;
+        bgEnd = [self averageColorInImage:image rect:bgBottom excludingColor:textColor minDistance:0.12] ?: backgroundColor;
+    }
 
     UIEdgeInsets insets = UIEdgeInsetsMake(1.0, 2.0, 1.0, 2.0);
     CGFloat br = 0, bg = 0, bb = 0;
-    if (TOGetRGBComponents(backgroundColor, &br, &bg, &bb)) {
+    if (needsBackground && TOGetRGBComponents(backgroundColor, &br, &bg, &bb)) {
         CGRect expanded = CGRectInset(textRect, -20.0, -14.0);
         CGRect safe = CGRectIntersection(expanded, CGRectMake(0, 0, image.size.width, image.size.height));
         if (!CGRectIsEmpty(safe) && safe.size.width > 2 && safe.size.height > 2) {
@@ -2177,14 +2195,18 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         }
     }
 
-    return @{
-        @"textStart": textStart ?: textColor ?: UIColor.whiteColor,
-        @"textEnd": textEnd ?: textColor ?: UIColor.whiteColor,
-        @"bgStart": bgStart ?: backgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0],
-        @"bgEnd": bgEnd ?: backgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0],
-        @"bgInsets": [NSValue valueWithUIEdgeInsets:insets],
-        @"bgCornerRadius": @(3.0)
-    };
+    NSMutableDictionary *style = [NSMutableDictionary dictionary];
+    if (needsText) {
+        style[@"textStart"] = textStart ?: textColor ?: UIColor.whiteColor;
+        style[@"textEnd"] = textEnd ?: textColor ?: UIColor.whiteColor;
+    }
+    if (needsBackground) {
+        style[@"bgStart"] = bgStart ?: backgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0];
+        style[@"bgEnd"] = bgEnd ?: backgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0];
+        style[@"bgInsets"] = [NSValue valueWithUIEdgeInsets:insets];
+        style[@"bgCornerRadius"] = @(3.0);
+    }
+    return style;
 }
 
 static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(void) {
@@ -2393,8 +2415,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                     } mutableCopy];
 
                     TOTranslationManager *styleSettings = [TOTranslationManager shared];
-                    if (styleSettings.smartCompatibilityEnabled) {
-                        NSDictionary *smartStyle = [self smartStyleForImage:image textRect:rect textColor:(autoColor ?: UIColor.whiteColor) backgroundColor:(autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0])];
+                    BOOL smartText = (styleSettings.smartCompatibilityEnabled && styleSettings.ocrAutoColorEnabled);
+                    BOOL smartBg = (styleSettings.smartCompatibilityEnabled && styleSettings.ocrBackgroundAutoColorEnabled);
+                    if (smartText || smartBg) {
+                        NSDictionary *smartStyle = [self smartStyleForImage:image textRect:rect textColor:(autoColor ?: UIColor.whiteColor) backgroundColor:(autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0]) needsText:smartText needsBackground:smartBg];
                         if ([smartStyle isKindOfClass:[NSDictionary class]]) {
                             id textStart = smartStyle[@"textStart"];
                             id textEnd = smartStyle[@"textEnd"];
@@ -2499,8 +2523,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                         } mutableCopy];
 
                         TOTranslationManager *styleSettings = [TOTranslationManager shared];
-                        if (styleSettings.smartCompatibilityEnabled) {
-                            NSDictionary *smartStyle = [self smartStyleForImage:image textRect:rect textColor:(autoColor ?: UIColor.whiteColor) backgroundColor:(autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0])];
+                        BOOL smartText = (styleSettings.smartCompatibilityEnabled && styleSettings.ocrAutoColorEnabled);
+                        BOOL smartBg = (styleSettings.smartCompatibilityEnabled && styleSettings.ocrBackgroundAutoColorEnabled);
+                        if (smartText || smartBg) {
+                            NSDictionary *smartStyle = [self smartStyleForImage:image textRect:rect textColor:(autoColor ?: UIColor.whiteColor) backgroundColor:(autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0]) needsText:smartText needsBackground:smartBg];
                             if ([smartStyle isKindOfClass:[NSDictionary class]]) {
                                 id textStart = smartStyle[@"textStart"];
                                 id textEnd = smartStyle[@"textEnd"];
