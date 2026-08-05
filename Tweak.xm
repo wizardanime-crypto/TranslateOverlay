@@ -1343,6 +1343,18 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         if (!fg) fg = [m ocrManualUIColor];
 
         CGRect bgRect = CGRectInset(rect, -2.0, -1.0);
+        NSValue *insetsValue = item[@"detectedBackgroundInsets"];
+        if (m.ocrBackgroundAutoColorEnabled && insetsValue) {
+            UIEdgeInsets detectedInsets = [insetsValue UIEdgeInsetsValue];
+            CGFloat left = MAX(0.0, detectedInsets.left);
+            CGFloat right = MAX(0.0, detectedInsets.right);
+            CGFloat top = MAX(0.0, detectedInsets.top);
+            CGFloat bottom = MAX(0.0, detectedInsets.bottom);
+            bgRect = CGRectMake(rect.origin.x - left,
+                                rect.origin.y - top,
+                                rect.size.width + left + right,
+                                rect.size.height + top + bottom);
+        }
         UIColor *bgBase = nil;
         if (m.ocrBackgroundAutoColorEnabled) bgBase = item[@"detectedBackgroundColor"];
         if (!bgBase) bgBase = [m ocrBackgroundUIColor];
@@ -1640,8 +1652,8 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     CGImageRef cropped = CGImageCreateWithImageInRect(image.CGImage, pxRect);
     if (!cropped) return nil;
 
-    const size_t w = 24;
-    const size_t h = 24;
+    const size_t w = 40;
+    const size_t h = 40;
     const size_t bpp = 4;
     const size_t bpr = w * bpp;
 
@@ -1663,13 +1675,35 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
     CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cropped);
 
-    CGFloat sumR = 0;
-    CGFloat sumG = 0;
-    CGFloat sumB = 0;
-    CGFloat sumW = 0;
-
+    CGFloat luminance[40 * 40];
     for (size_t y = 0; y < h; y++) {
         for (size_t x = 0; x < w; x++) {
+            size_t idx = y * bpr + x * bpp;
+            CGFloat r = buf[idx] / 255.0;
+            CGFloat g = buf[idx + 1] / 255.0;
+            CGFloat b = buf[idx + 2] / 255.0;
+            luminance[y * w + x] = (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
+        }
+    }
+
+    static const NSInteger kBinsPerChannel = 16;
+    static const NSInteger kTotalBins = kBinsPerChannel * kBinsPerChannel * kBinsPerChannel;
+    CGFloat binWeight[kTotalBins];
+    CGFloat binSumR[kTotalBins];
+    CGFloat binSumG[kTotalBins];
+    CGFloat binSumB[kTotalBins];
+    memset(binWeight, 0, sizeof(binWeight));
+    memset(binSumR, 0, sizeof(binSumR));
+    memset(binSumG, 0, sizeof(binSumG));
+    memset(binSumB, 0, sizeof(binSumB));
+
+    CGFloat fallbackR = 0;
+    CGFloat fallbackG = 0;
+    CGFloat fallbackB = 0;
+    CGFloat fallbackW = 0;
+
+    for (size_t y = 1; y + 1 < h; y++) {
+        for (size_t x = 1; x + 1 < w; x++) {
             size_t idx = y * bpr + x * bpp;
             CGFloat r = buf[idx] / 255.0;
             CGFloat g = buf[idx + 1] / 255.0;
@@ -1680,14 +1714,37 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
             CGFloat maxC = MAX(r, MAX(g, b));
             CGFloat minC = MIN(r, MIN(g, b));
             CGFloat sat = (maxC <= 0.0001) ? 0.0 : ((maxC - minC) / maxC);
-            CGFloat val = maxC;
-            if (sat < 0.12 || val < 0.16) continue;
+            CGFloat lum = luminance[y * w + x];
 
-            CGFloat weight = a * (0.4 + 0.6 * sat);
-            sumR += r * weight;
-            sumG += g * weight;
-            sumB += b * weight;
-            sumW += weight;
+            CGFloat lumL = luminance[y * w + (x - 1)];
+            CGFloat lumR = luminance[y * w + (x + 1)];
+            CGFloat lumU = luminance[(y - 1) * w + x];
+            CGFloat lumD = luminance[(y + 1) * w + x];
+            CGFloat edge = fabs(lum - lumL) + fabs(lum - lumR) + fabs(lum - lumU) + fabs(lum - lumD);
+
+            CGFloat chromaWeight = 0.35 + (0.65 * sat);
+            CGFloat achromaticExtremeBoost = (sat < 0.12 && (lum < 0.23 || lum > 0.77)) ? 1.35 : 1.0;
+            CGFloat edgeBoost = 0.55 + MIN(1.6, edge * 5.2);
+            CGFloat weight = a * chromaWeight * achromaticExtremeBoost * edgeBoost;
+            if (weight <= 0.01) continue;
+
+            NSInteger ri = (NSInteger)lround(r * (kBinsPerChannel - 1));
+            NSInteger gi = (NSInteger)lround(g * (kBinsPerChannel - 1));
+            NSInteger bi = (NSInteger)lround(b * (kBinsPerChannel - 1));
+            ri = MAX(0, MIN(kBinsPerChannel - 1, ri));
+            gi = MAX(0, MIN(kBinsPerChannel - 1, gi));
+            bi = MAX(0, MIN(kBinsPerChannel - 1, bi));
+            NSInteger bin = (ri << 8) | (gi << 4) | bi;
+
+            binWeight[bin] += weight;
+            binSumR[bin] += r * weight;
+            binSumG[bin] += g * weight;
+            binSumB[bin] += b * weight;
+
+            fallbackR += r * weight;
+            fallbackG += g * weight;
+            fallbackB += b * weight;
+            fallbackW += weight;
         }
     }
 
@@ -1695,8 +1752,169 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     free(buf);
     CGImageRelease(cropped);
 
-    if (sumW < 0.01) return nil;
-    return [UIColor colorWithRed:(sumR / sumW) green:(sumG / sumW) blue:(sumB / sumW) alpha:1.0];
+    NSInteger bestBin = -1;
+    CGFloat bestScore = 0;
+    for (NSInteger i = 0; i < kTotalBins; i++) {
+        if (binWeight[i] > bestScore) {
+            bestScore = binWeight[i];
+            bestBin = i;
+        }
+    }
+
+    if (bestBin >= 0 && bestScore > 0.01) {
+        CGFloat wSum = MAX(0.0001, binWeight[bestBin]);
+        return [UIColor colorWithRed:(binSumR[bestBin] / wSum)
+                               green:(binSumG[bestBin] / wSum)
+                                blue:(binSumB[bestBin] / wSum)
+                               alpha:1.0];
+    }
+
+    if (fallbackW < 0.01) return nil;
+    return [UIColor colorWithRed:(fallbackR / fallbackW)
+                           green:(fallbackG / fallbackW)
+                            blue:(fallbackB / fallbackW)
+                           alpha:1.0];
+}
+
+- (UIEdgeInsets)detectedBackgroundInsetsInImage:(UIImage *)image rect:(CGRect)rect backgroundColor:(UIColor *)backgroundColor textColor:(UIColor *)textColor {
+    if (!image.CGImage || CGRectIsEmpty(rect) || !backgroundColor) return UIEdgeInsetsMake(1.0, 2.0, 1.0, 2.0);
+
+    CGRect expanded = CGRectInset(rect, -18.0, -12.0);
+    CGRect safe = CGRectIntersection(expanded, CGRectMake(0, 0, image.size.width, image.size.height));
+    if (CGRectIsEmpty(safe) || safe.size.width < 2 || safe.size.height < 2) return UIEdgeInsetsMake(1.0, 2.0, 1.0, 2.0);
+
+    CGFloat scaleX = (CGFloat)CGImageGetWidth(image.CGImage) / image.size.width;
+    CGFloat scaleY = (CGFloat)CGImageGetHeight(image.CGImage) / image.size.height;
+    CGRect pxRect = CGRectIntegral(CGRectMake(safe.origin.x * scaleX, safe.origin.y * scaleY, safe.size.width * scaleX, safe.size.height * scaleY));
+    CGImageRef cropped = CGImageCreateWithImageInRect(image.CGImage, pxRect);
+    if (!cropped) return UIEdgeInsetsMake(1.0, 2.0, 1.0, 2.0);
+
+    const size_t w = 60;
+    const size_t h = 60;
+    const size_t bpp = 4;
+    const size_t bpr = w * bpp;
+
+    uint8_t *buf = (uint8_t *)calloc(h * bpr, sizeof(uint8_t));
+    if (!buf) {
+        CGImageRelease(cropped);
+        return UIEdgeInsetsMake(1.0, 2.0, 1.0, 2.0);
+    }
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(buf, w, h, 8, bpr, cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) {
+        free(buf);
+        CGImageRelease(cropped);
+        return UIEdgeInsetsMake(1.0, 2.0, 1.0, 2.0);
+    }
+
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cropped);
+
+    CGFloat br = 0, bg = 0, bb = 0;
+    if (!TOGetRGBComponents(backgroundColor, &br, &bg, &bb)) {
+        CGContextRelease(ctx);
+        free(buf);
+        CGImageRelease(cropped);
+        return UIEdgeInsetsMake(1.0, 2.0, 1.0, 2.0);
+    }
+
+    CGFloat tr = 0, tg = 0, tb = 0;
+    BOOL hasTextColor = TOGetRGBComponents(textColor, &tr, &tg, &tb);
+
+    CGFloat safeW = MAX(CGRectGetWidth(safe), 1.0);
+    CGFloat safeH = MAX(CGRectGetHeight(safe), 1.0);
+    NSInteger innerMinX = (NSInteger)floor(((CGRectGetMinX(rect) - CGRectGetMinX(safe)) / safeW) * (CGFloat)w);
+    NSInteger innerMaxX = (NSInteger)ceil(((CGRectGetMaxX(rect) - CGRectGetMinX(safe)) / safeW) * (CGFloat)w);
+    NSInteger innerMinY = (NSInteger)floor(((CGRectGetMinY(rect) - CGRectGetMinY(safe)) / safeH) * (CGFloat)h);
+    NSInteger innerMaxY = (NSInteger)ceil(((CGRectGetMaxY(rect) - CGRectGetMinY(safe)) / safeH) * (CGFloat)h);
+    innerMinX = MAX(0, MIN((NSInteger)w - 1, innerMinX));
+    innerMaxX = MAX(innerMinX + 1, MIN((NSInteger)w, innerMaxX));
+    innerMinY = MAX(0, MIN((NSInteger)h - 1, innerMinY));
+    innerMaxY = MAX(innerMinY + 1, MIN((NSInteger)h, innerMaxY));
+
+    CGFloat maxBgDist = 0.17;
+    CGFloat maxTextDist = 0.13;
+
+    BOOL (^pixelMatchesBackground)(NSInteger, NSInteger) = ^BOOL(NSInteger x, NSInteger y) {
+        if (x < 0 || x >= (NSInteger)w || y < 0 || y >= (NSInteger)h) return NO;
+        size_t idx = y * bpr + x * bpp;
+        CGFloat r = buf[idx] / 255.0;
+        CGFloat g = buf[idx + 1] / 255.0;
+        CGFloat b = buf[idx + 2] / 255.0;
+        CGFloat a = buf[idx + 3] / 255.0;
+        if (a < 0.12) return NO;
+
+        CGFloat bgDist = TOColorDistance(r, g, b, br, bg, bb);
+        if (bgDist > maxBgDist) return NO;
+        if (hasTextColor) {
+            CGFloat textDist = TOColorDistance(r, g, b, tr, tg, tb);
+            if (textDist < maxTextDist) return NO;
+        }
+        return YES;
+    };
+
+    NSInteger leftGrow = 0;
+    for (NSInteger x = innerMinX - 1; x >= 0; x--) {
+        NSInteger matches = 0;
+        NSInteger total = 0;
+        for (NSInteger y = innerMinY; y < innerMaxY; y++) {
+            total++;
+            if (pixelMatchesBackground(x, y)) matches++;
+        }
+        CGFloat ratio = (total > 0) ? ((CGFloat)matches / (CGFloat)total) : 0.0;
+        if (ratio >= 0.52) leftGrow++; else break;
+    }
+
+    NSInteger rightGrow = 0;
+    for (NSInteger x = innerMaxX; x < (NSInteger)w; x++) {
+        NSInteger matches = 0;
+        NSInteger total = 0;
+        for (NSInteger y = innerMinY; y < innerMaxY; y++) {
+            total++;
+            if (pixelMatchesBackground(x, y)) matches++;
+        }
+        CGFloat ratio = (total > 0) ? ((CGFloat)matches / (CGFloat)total) : 0.0;
+        if (ratio >= 0.52) rightGrow++; else break;
+    }
+
+    NSInteger topGrow = 0;
+    for (NSInteger y = innerMinY - 1; y >= 0; y--) {
+        NSInteger matches = 0;
+        NSInteger total = 0;
+        for (NSInteger x = innerMinX; x < innerMaxX; x++) {
+            total++;
+            if (pixelMatchesBackground(x, y)) matches++;
+        }
+        CGFloat ratio = (total > 0) ? ((CGFloat)matches / (CGFloat)total) : 0.0;
+        if (ratio >= 0.52) topGrow++; else break;
+    }
+
+    NSInteger bottomGrow = 0;
+    for (NSInteger y = innerMaxY; y < (NSInteger)h; y++) {
+        NSInteger matches = 0;
+        NSInteger total = 0;
+        for (NSInteger x = innerMinX; x < innerMaxX; x++) {
+            total++;
+            if (pixelMatchesBackground(x, y)) matches++;
+        }
+        CGFloat ratio = (total > 0) ? ((CGFloat)matches / (CGFloat)total) : 0.0;
+        if (ratio >= 0.52) bottomGrow++; else break;
+    }
+
+    CGContextRelease(ctx);
+    free(buf);
+    CGImageRelease(cropped);
+
+    CGFloat scaleToImageX = safe.size.width / (CGFloat)w;
+    CGFloat scaleToImageY = safe.size.height / (CGFloat)h;
+
+    CGFloat leftInset = MAX(1.0, MIN(22.0, leftGrow * scaleToImageX));
+    CGFloat rightInset = MAX(1.0, MIN(22.0, rightGrow * scaleToImageX));
+    CGFloat topInset = MAX(1.0, MIN(14.0, topGrow * scaleToImageY));
+    CGFloat bottomInset = MAX(1.0, MIN(14.0, bottomGrow * scaleToImageY));
+    return UIEdgeInsetsMake(topInset, leftInset, bottomInset, rightInset);
 }
 
 - (UIColor *)detectedBackgroundColorInImage:(UIImage *)image rect:(CGRect)rect textColor:(UIColor *)textColor {
@@ -2028,6 +2246,17 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
             last[@"rect"] = [NSValue valueWithCGRect:CGRectUnion(lr, cr)];
             if (!last[@"detectedColor"] && current[@"detectedColor"]) last[@"detectedColor"] = current[@"detectedColor"];
             if (!last[@"detectedBackgroundColor"] && current[@"detectedBackgroundColor"]) last[@"detectedBackgroundColor"] = current[@"detectedBackgroundColor"];
+            NSValue *lastInsetsValue = last[@"detectedBackgroundInsets"];
+            NSValue *currentInsetsValue = current[@"detectedBackgroundInsets"];
+            if (lastInsetsValue || currentInsetsValue) {
+                UIEdgeInsets li = lastInsetsValue ? [lastInsetsValue UIEdgeInsetsValue] : UIEdgeInsetsZero;
+                UIEdgeInsets ci = currentInsetsValue ? [currentInsetsValue UIEdgeInsetsValue] : UIEdgeInsetsZero;
+                UIEdgeInsets merged = UIEdgeInsetsMake(MAX(li.top, ci.top),
+                                                       MAX(li.left, ci.left),
+                                                       MAX(li.bottom, ci.bottom),
+                                                       MAX(li.right, ci.right));
+                last[@"detectedBackgroundInsets"] = [NSValue valueWithUIEdgeInsets:merged];
+            }
         } else {
             [blocks addObject:current];
         }
@@ -2057,11 +2286,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                     CGRect rect = [self imageRectForNormalizedVisionRect:obs.boundingBox imageSize:image.size];
                     UIColor *autoColor = [self detectedTextColorInImage:image rect:rect];
                     UIColor *autoBackgroundColor = [self detectedBackgroundColorInImage:image rect:rect textColor:autoColor];
+                    UIEdgeInsets autoBackgroundInsets = [self detectedBackgroundInsetsInImage:image rect:rect backgroundColor:autoBackgroundColor textColor:autoColor];
                     [items addObject:@{
                         @"source": top.string,
                         @"rect": [NSValue valueWithCGRect:rect],
                         @"detectedColor": autoColor ?: UIColor.whiteColor,
-                        @"detectedBackgroundColor": autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0]
+                        @"detectedBackgroundColor": autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0],
+                        @"detectedBackgroundInsets": [NSValue valueWithUIEdgeInsets:autoBackgroundInsets]
                     }];
                 }
             }
@@ -2141,11 +2372,13 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                         CGRect rect = [self imageRectForNormalizedVisionRect:obs.boundingBox imageSize:image.size];
                         UIColor *autoColor = [self detectedTextColorInImage:image rect:rect];
                         UIColor *autoBackgroundColor = [self detectedBackgroundColorInImage:image rect:rect textColor:autoColor];
+                        UIEdgeInsets autoBackgroundInsets = [self detectedBackgroundInsetsInImage:image rect:rect backgroundColor:autoBackgroundColor textColor:autoColor];
                         [items addObject:@{
                             @"source": top.string,
                             @"rect": [NSValue valueWithCGRect:rect],
                             @"detectedColor": autoColor ?: UIColor.whiteColor,
-                            @"detectedBackgroundColor": autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0]
+                            @"detectedBackgroundColor": autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0],
+                            @"detectedBackgroundInsets": [NSValue valueWithUIEdgeInsets:autoBackgroundInsets]
                         }];
                     }
                 }
