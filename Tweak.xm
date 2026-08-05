@@ -916,7 +916,7 @@ static void TOWarmupUILocalization(void) {
             @"زمن تأخير الترجمة المباشره", @"ادخل الزمن بالمللي ثانية", @"تم ضبط زمن التأخير",
             @"تحرير الترجمه المباشره", @"فعّل تحرير النص بعد ترجمة OCR أولاً", @"لا يوجد نص مباشر لتحريره الآن",
             @"الكلمات البديله", @"تفعيل الكلمات البديله", @"إضافة كلمة بديلة", @"الكلمة الأصلية", @"الكلمة البديلة",
-            @"تحرير متعدد (سطر لكل كلمة)", @"تحرير الكلمات البديله", @"تم حفظ الكلمات البديله", @"عدد الكلمات البديله",
+            @"تحرير متعدد (سطر لكل كلمة)", @"الصيغة: الأصلية - البديلة", @"تحرير الكلمات البديله", @"تم حفظ الكلمات البديله", @"عدد الكلمات البديله",
             @"مفعل", @"معطل", @"لا توجد كلمات بديله", @"اختر كلمة لحذفها أو احذف الكل", @"تم حذف الكلمة البديله",
             @"تحديد الكل للحذف", @"تأكيد", @"سيتم حذف جميع الكلمات البديله", @"حذف", @"تم حذف جميع الكلمات البديله"
         ];
@@ -3488,7 +3488,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
     TOTranslationManager *m = [TOTranslationManager shared];
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TOUIString(@"الكلمات البديله")
-                                                                   message:nil
+                                                                   message:TOUIString(@"الصيغة: الأصلية - البديلة")
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
 
     NSString *stateTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"تفعيل الكلمات البديله"), (m.replacementWordsEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))];
@@ -3517,7 +3517,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
             @synchronized (m) {
                 m.replacementWordsMap[from] = to;
+                [m.persistentCache removeAllObjects];
             }
+            [m.cache removeAllObjects];
             [m saveSettings];
             [self showToast:TOUIString(@"تم حفظ الكلمات البديله")];
         }]];
@@ -3543,7 +3545,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                 to = m.replacementWordsMap[from];
             }
             if (to.length == 0) continue;
-            [lines addObject:[NSString stringWithFormat:@"%@=%@", from, to]];
+            [lines addObject:[NSString stringWithFormat:@"%@ - %@", from, to]];
         }
         editor.initialText = [lines componentsJoinedByString:@"\n"];
 
@@ -3555,8 +3557,12 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                 NSString *line = [row stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
                 if (line.length == 0) continue;
 
-                NSRange sep = [line rangeOfString:@"=>"];
-                if (sep.location == NSNotFound) sep = [line rangeOfString:@"="];
+                NSRange sep = [line rangeOfString:@" - "];
+                if (sep.location == NSNotFound) sep = [line rangeOfString:@" – "];
+                if (sep.location == NSNotFound) sep = [line rangeOfString:@" — "];
+                if (sep.location == NSNotFound) {
+                    sep = [line rangeOfString:@"-"];
+                }
                 if (sep.location == NSNotFound) continue;
 
                 NSString *from = [[line substringToIndex:sep.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
@@ -3568,7 +3574,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             @synchronized (m) {
                 [m.replacementWordsMap removeAllObjects];
                 [m.replacementWordsMap addEntriesFromDictionary:newMap];
+                [m.persistentCache removeAllObjects];
             }
+            [m.cache removeAllObjects];
             [m saveSettings];
             [self showToast:[NSString stringWithFormat:@"%@: %d", TOUIString(@"عدد الكلمات البديله"), (int)newMap.count]];
         };
@@ -3617,7 +3625,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
             @synchronized (m) {
                 [m.replacementWordsMap removeObjectForKey:from];
+                [m.persistentCache removeAllObjects];
             }
+            [m.cache removeAllObjects];
             [m saveSettings];
             [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"تم حذف الكلمة البديله"), from]];
             [self showReplacementWordsEditor];
@@ -3632,7 +3642,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [confirm addAction:[UIAlertAction actionWithTitle:TOUIString(@"حذف") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *confirmAction) {
             @synchronized (m) {
                 [m.replacementWordsMap removeAllObjects];
+                [m.persistentCache removeAllObjects];
             }
+            [m.cache removeAllObjects];
             [m saveSettings];
             [self showToast:TOUIString(@"تم حذف جميع الكلمات البديله")];
         }]];
