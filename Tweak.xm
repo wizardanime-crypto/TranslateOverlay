@@ -32,6 +32,8 @@ static NSString * const kTOOCRBackgroundSaturationKey = @"to_ocr_background_satu
 static NSString * const kTOOCRBackgroundBrightnessKey = @"to_ocr_background_brightness";
 static NSString * const kTOLiveTouchResumeDelayKey = @"to_live_touch_resume_delay";
 static NSString * const kTOLiveOCRCorrectionsKey = @"to_live_ocr_corrections";
+static NSString * const kTOReplacementWordsEnabledKey = @"to_replacement_words_enabled";
+static NSString * const kTOReplacementWordsMapKey = @"to_replacement_words_map";
 
 @class TOTranslationManager;
 
@@ -391,6 +393,8 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *persistentCache;
 @property (nonatomic, strong) NSMutableSet<NSString *> *inFlightTranslationKeys;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *liveOCRCorrections;
+@property (nonatomic, assign) BOOL replacementWordsEnabled;
+@property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *replacementWordsMap;
 
 @property (nonatomic, assign) CGFloat ocrTextScale;
 @property (nonatomic, assign) BOOL ocrAutoColorEnabled;
@@ -416,6 +420,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 - (void)translateText:(NSString *)text completion:(void (^)(NSString *translated))completion;
 - (void)translateOCRText:(NSString *)text completion:(void (^)(NSString *translated))completion;
 - (void)applyLiveCorrectionsFromItems:(NSArray<NSDictionary *> *)items;
+- (NSString *)applyReplacementWordsToText:(NSString *)text;
 @end
 
 @implementation TOTranslationManager
@@ -429,6 +434,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         m.persistentCache = [NSMutableDictionary new];
         m.inFlightTranslationKeys = [NSMutableSet new];
         m.liveOCRCorrections = [NSMutableDictionary new];
+        m.replacementWordsMap = [NSMutableDictionary new];
         [m loadSettings];
     });
     return m;
@@ -457,6 +463,25 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
                 if (![value isKindOfClass:[NSString class]]) continue;
                 if (((NSString *)value).length == 0) continue;
                 self.liveOCRCorrections[(NSString *)key] = (NSString *)value;
+            }
+        }
+    }
+
+    NSNumber *replacementEnabled = [d objectForKey:kTOReplacementWordsEnabledKey];
+    self.replacementWordsEnabled = replacementEnabled ? [replacementEnabled boolValue] : NO;
+
+    NSDictionary *storedReplacementMap = [d dictionaryForKey:kTOReplacementWordsMapKey];
+    if ([storedReplacementMap isKindOfClass:[NSDictionary class]]) {
+        @synchronized (self) {
+            [self.replacementWordsMap removeAllObjects];
+            for (id key in storedReplacementMap) {
+                if (![key isKindOfClass:[NSString class]]) continue;
+                id value = storedReplacementMap[key];
+                if (![value isKindOfClass:[NSString class]]) continue;
+                NSString *from = [(NSString *)key stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                NSString *to = [(NSString *)value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                if (from.length == 0 || to.length == 0) continue;
+                self.replacementWordsMap[from] = to;
             }
         }
     }
@@ -511,12 +536,16 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     [d setObject:self.targetLanguage ?: @"ar" forKey:kTOTargetLanguageKey];
     NSDictionary *cacheSnapshot = nil;
     NSDictionary *correctionsSnapshot = nil;
+    NSDictionary *replacementMapSnapshot = nil;
     @synchronized (self) {
         cacheSnapshot = [self.persistentCache copy] ?: @{};
         correctionsSnapshot = [self.liveOCRCorrections copy] ?: @{};
+        replacementMapSnapshot = [self.replacementWordsMap copy] ?: @{};
     }
     [d setObject:cacheSnapshot forKey:kTOTranslationCacheKey];
     [d setObject:correctionsSnapshot forKey:kTOLiveOCRCorrectionsKey];
+    [d setBool:self.replacementWordsEnabled forKey:kTOReplacementWordsEnabledKey];
+    [d setObject:replacementMapSnapshot forKey:kTOReplacementWordsMapKey];
 
     [d setDouble:self.ocrTextScale forKey:kTOOCRTextScaleKey];
     [d setBool:self.ocrAutoColorEnabled forKey:kTOOCRTextAutoColorEnabledKey];
@@ -592,7 +621,8 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         }
     }
     if (cached.length > 0 && !cachedLooksUntranslated) {
-        if (completion) completion(cached);
+        NSString *processedCached = [self applyReplacementWordsToText:cached];
+        if (completion) completion(processedCached.length > 0 ? processedCached : cached);
         return;
     }
 
@@ -646,11 +676,17 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
             }
         }
 
+        NSString *finalResult = result;
+        if (didGetValidTranslationPayload) {
+            NSString *processed = [self applyReplacementWordsToText:result];
+            if (processed.length > 0) finalResult = processed;
+        }
+
         // Cache only validated translation payloads; avoid poisoning cache with original text on network/parse failures.
-        if (didGetValidTranslationPayload && result.length > 0) {
-            [self.cache setObject:result forKey:cacheKey];
+        if (didGetValidTranslationPayload && finalResult.length > 0) {
+            [self.cache setObject:finalResult forKey:cacheKey];
             @synchronized (self) {
-                self.persistentCache[cacheKey] = result;
+                self.persistentCache[cacheKey] = finalResult;
                 if (self.persistentCache.count > 500) {
                     NSString *first = self.persistentCache.allKeys.firstObject;
                     if (first) [self.persistentCache removeObjectForKey:first];
@@ -664,7 +700,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         }
 
         dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(result);
+            if (completion) completion(finalResult);
         });
     }] resume];
 }
@@ -684,7 +720,8 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         manual = self.liveOCRCorrections[manualKey];
     }
     if (manual.length > 0) {
-        if (completion) completion(manual);
+        NSString *processedManual = [self applyReplacementWordsToText:manual];
+        if (completion) completion(processedManual.length > 0 ? processedManual : manual);
         return;
     }
 
@@ -701,7 +738,8 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
             return;
         }
 
-        if (completion) completion(result);
+        NSString *processed = [self applyReplacementWordsToText:result];
+        if (completion) completion(processed.length > 0 ? processed : result);
     }];
 }
 
@@ -744,6 +782,31 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     if (changed) [self saveSettings];
 }
 
+- (NSString *)applyReplacementWordsToText:(NSString *)text {
+    if (text.length == 0) return text ?: @"";
+    if (!self.replacementWordsEnabled) return text;
+
+    NSDictionary<NSString *, NSString *> *snapshot = nil;
+    @synchronized (self) {
+        snapshot = [self.replacementWordsMap copy];
+    }
+    if (snapshot.count == 0) return text;
+
+    NSString *result = [text copy];
+    NSArray<NSString *> *keys = [snapshot.allKeys sortedArrayUsingComparator:^NSComparisonResult(NSString *a, NSString *b) {
+        if (a.length > b.length) return NSOrderedAscending;
+        if (a.length < b.length) return NSOrderedDescending;
+        return [a compare:b options:NSCaseInsensitiveSearch];
+    }];
+
+    for (NSString *from in keys) {
+        NSString *to = snapshot[from];
+        if (from.length == 0 || to.length == 0) continue;
+        result = [result stringByReplacingOccurrencesOfString:from withString:to];
+    }
+    return result;
+}
+
 @end
 
 static NSString *TOUIString(NSString *text) {
@@ -760,7 +823,10 @@ static NSString *TOUIString(NSString *text) {
             cached = m.persistentCache[key];
         }
     }
-    if (cached.length > 0) return cached;
+    if (cached.length > 0) {
+        NSString *processedCached = [m applyReplacementWordsToText:cached];
+        return processedCached.length > 0 ? processedCached : cached;
+    }
 
     static NSMutableDictionary<NSString *, NSNumber *> *inFlight;
     static dispatch_once_t onceToken;
@@ -804,10 +870,13 @@ static NSString *TOUIString(NSString *text) {
             }
         }
 
-        if (translated.length > 0) {
-            [m.cache setObject:translated forKey:key];
+        NSString *finalTranslated = [m applyReplacementWordsToText:translated];
+        if (finalTranslated.length == 0) finalTranslated = translated;
+
+        if (finalTranslated.length > 0) {
+            [m.cache setObject:finalTranslated forKey:key];
             @synchronized (m) {
-                m.persistentCache[key] = translated;
+                m.persistentCache[key] = finalTranslated;
                 if (m.persistentCache.count > 800) {
                     NSString *first = m.persistentCache.allKeys.firstObject;
                     if (first) [m.persistentCache removeObjectForKey:first];
@@ -845,7 +914,10 @@ static void TOWarmupUILocalization(void) {
             @"تم", @"إغلاق", @"حفظ", @"تحرير", @"تحرير نص OCR", @"حجم نص OCR", @"نتيجة OCR", @"المصدر", @"الهدف",
             @"جارٍ التقاط الصفحة وتحليلها...", @"تمت محاولة الترجمة",
             @"زمن تأخير الترجمة المباشره", @"ادخل الزمن بالمللي ثانية", @"تم ضبط زمن التأخير",
-            @"تحرير الترجمه المباشره", @"فعّل تحرير النص بعد ترجمة OCR أولاً", @"لا يوجد نص مباشر لتحريره الآن"
+            @"تحرير الترجمه المباشره", @"فعّل تحرير النص بعد ترجمة OCR أولاً", @"لا يوجد نص مباشر لتحريره الآن",
+            @"الكلمات البديله", @"تفعيل الكلمات البديله", @"إضافة كلمة بديلة", @"الكلمة الأصلية", @"الكلمة البديلة",
+            @"تحرير متعدد (سطر لكل كلمة)", @"مسح الكلمات البديله", @"تم حفظ الكلمات البديله", @"عدد الكلمات البديله", @"تم مسح الكلمات البديله",
+            @"مفعل", @"معطل"
         ];
     });
 
@@ -1278,6 +1350,7 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 @property (nonatomic, strong) UIImage *baseImage;
 @property (nonatomic, strong) NSMutableArray<NSMutableDictionary *> *items;
 @property (nonatomic, strong) UIImageView *imageView;
+@property (nonatomic, strong) NSArray<NSString *> *originalTranslatedBlocks;
 @property (nonatomic, copy) void (^onItemsChanged)(NSArray<NSMutableDictionary *> *items, UIImage *renderedImage);
 @property (nonatomic, copy) dispatch_block_t onDismiss;
 @end
@@ -1300,6 +1373,28 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         NSString *edited = [parts[i] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         if (edited.length > 0) self.items[i][@"translated"] = edited;
     }
+}
+
+- (void)captureOriginalTranslatedBlocksIfNeeded {
+    if (self.originalTranslatedBlocks.count > 0) return;
+    NSMutableArray<NSString *> *blocks = [NSMutableArray arrayWithCapacity:self.items.count];
+    for (NSDictionary *item in self.items) {
+        NSString *translated = item[@"translated"];
+        if (translated.length == 0) translated = item[@"source"] ?: @"";
+        [blocks addObject:translated ?: @""];
+    }
+    self.originalTranslatedBlocks = [blocks copy];
+}
+
+- (void)restoreOriginalTranslatedBlocks {
+    if (self.originalTranslatedBlocks.count == 0) return;
+    NSInteger count = MIN((NSInteger)self.items.count, (NSInteger)self.originalTranslatedBlocks.count);
+    for (NSInteger i = 0; i < count; i++) {
+        NSString *original = self.originalTranslatedBlocks[i] ?: @"";
+        self.items[i][@"translated"] = original;
+    }
+    [self refreshRenderedImage];
+    if (self.onItemsChanged) self.onItemsChanged(self.items, self.imageView.image);
 }
 
 - (void)refreshRenderedImage {
@@ -1333,6 +1428,17 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     [close addTarget:self action:@selector(closePressed) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:close];
 
+    UIButton *restore = [UIButton buttonWithType:UIButtonTypeSystem];
+    restore.frame = CGRectMake(12, 42, 30, 30);
+    restore.autoresizingMask = UIViewAutoresizingFlexibleRightMargin;
+    [restore setTitle:@"🔄" forState:UIControlStateNormal];
+    restore.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
+    [restore setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+    restore.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.12];
+    restore.layer.cornerRadius = 8;
+    [restore addTarget:self action:@selector(restoreOriginalPressed) forControlEvents:UIControlEventTouchUpInside];
+    [self.view addSubview:restore];
+
     if ([TOTranslationManager shared].ocrEditAfterTranslateEnabled) {
         UIButton *edit = [UIButton buttonWithType:UIButtonTypeSystem];
         edit.frame = CGRectMake(self.view.bounds.size.width - 170, 40, 72, 36);
@@ -1354,6 +1460,8 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     imageView.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.04];
     self.imageView = imageView;
     [self.view addSubview:imageView];
+
+    [self captureOriginalTranslatedBlocksIfNeeded];
 
     [self refreshRenderedImage];
 }
@@ -1381,6 +1489,10 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         if (self.onItemsChanged) self.onItemsChanged(self.items, self.imageView.image);
     };
     [self presentViewController:editor animated:YES completion:nil];
+}
+
+- (void)restoreOriginalPressed {
+    [self restoreOriginalTranslatedBlocks];
 }
 
 @end
@@ -2087,6 +2199,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)beginLiveTouchInteraction;
 - (void)endLiveTouchInteractionIfNeeded;
 - (void)showLiveTouchResumeDelaySettings;
+- (void)showReplacementWordsSettings;
 - (void)syncLiveTranslationLoopState;
 - (void)liveTranslationTimerFired;
 - (void)scheduleLiveTranslationBurst;
@@ -3367,6 +3480,115 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     }];
 }
 
+- (void)showReplacementWordsSettings {
+    UIViewController *top = TOTopViewController();
+    if (!top) return;
+
+    TOTranslationManager *m = [TOTranslationManager shared];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TOUIString(@"الكلمات البديله")
+                                                                   message:nil
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    NSString *stateTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"تفعيل الكلمات البديله"), (m.replacementWordsEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))];
+    [sheet addAction:[UIAlertAction actionWithTitle:stateTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        m.replacementWordsEnabled = !m.replacementWordsEnabled;
+        [m saveSettings];
+        [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"الكلمات البديله"), (m.replacementWordsEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))]];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"إضافة كلمة بديلة") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        UIAlertController *alert = [UIAlertController alertControllerWithTitle:TOUIString(@"إضافة كلمة بديلة")
+                                                                       message:nil
+                                                                preferredStyle:UIAlertControllerStyleAlert];
+        [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+            field.placeholder = TOUIString(@"الكلمة الأصلية");
+        }];
+        [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+            field.placeholder = TOUIString(@"الكلمة البديلة");
+        }];
+
+        [alert addAction:[UIAlertAction actionWithTitle:TOUIString(@"إلغاء") style:UIAlertActionStyleCancel handler:nil]];
+        [alert addAction:[UIAlertAction actionWithTitle:TOUIString(@"حفظ") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *saveAction) {
+            NSString *from = [alert.textFields.firstObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            NSString *to = [alert.textFields.lastObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (from.length == 0 || to.length == 0) return;
+
+            @synchronized (m) {
+                m.replacementWordsMap[from] = to;
+            }
+            [m saveSettings];
+            [self showToast:TOUIString(@"تم حفظ الكلمات البديله")];
+        }]];
+
+        [top presentViewController:alert animated:YES completion:^{
+            TOTranslateControllerTree(alert);
+        }];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"تحرير متعدد (سطر لكل كلمة)") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        TOOCRTextEditorViewController *editor = [TOOCRTextEditorViewController new];
+        editor.modalPresentationStyle = UIModalPresentationFullScreen;
+
+        NSArray<NSString *> *keys = @[];
+        @synchronized (m) {
+            keys = [[m.replacementWordsMap allKeys] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+        }
+
+        NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithCapacity:keys.count];
+        for (NSString *from in keys) {
+            NSString *to = nil;
+            @synchronized (m) {
+                to = m.replacementWordsMap[from];
+            }
+            if (to.length == 0) continue;
+            [lines addObject:[NSString stringWithFormat:@"%@=%@", from, to]];
+        }
+        editor.initialText = [lines componentsJoinedByString:@"\n"];
+
+        editor.onSave = ^(NSString *editedText) {
+            NSArray<NSString *> *rows = [editedText componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet];
+            NSMutableDictionary<NSString *, NSString *> *newMap = [NSMutableDictionary dictionary];
+
+            for (NSString *row in rows) {
+                NSString *line = [row stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                if (line.length == 0) continue;
+
+                NSRange sep = [line rangeOfString:@"=>"];
+                if (sep.location == NSNotFound) sep = [line rangeOfString:@"="];
+                if (sep.location == NSNotFound) continue;
+
+                NSString *from = [[line substringToIndex:sep.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                NSString *to = [[line substringFromIndex:(sep.location + sep.length)] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                if (from.length == 0 || to.length == 0) continue;
+                newMap[from] = to;
+            }
+
+            @synchronized (m) {
+                [m.replacementWordsMap removeAllObjects];
+                [m.replacementWordsMap addEntriesFromDictionary:newMap];
+            }
+            [m saveSettings];
+            [self showToast:[NSString stringWithFormat:@"%@: %d", TOUIString(@"عدد الكلمات البديله"), (int)newMap.count]];
+        };
+
+        [top presentViewController:editor animated:YES completion:nil];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"مسح الكلمات البديله") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
+        @synchronized (m) {
+            [m.replacementWordsMap removeAllObjects];
+        }
+        [m saveSettings];
+        [self showToast:TOUIString(@"تم مسح الكلمات البديله")];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
+    [self configurePopover:sheet];
+    [top presentViewController:sheet animated:YES completion:^{
+        TOTranslateControllerTree(sheet);
+    }];
+}
+
 - (void)appTranslationTimerFired {
     TOTranslationManager *m = [TOTranslationManager shared];
     if (m.translationTapMode != TOTranslationTapModeNormal) {
@@ -3475,6 +3697,12 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
         [ocrSheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", TOUIString(@"تحرير الترجمه المباشره")] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
             [self showLiveTranslationEditorFromSettingsView:ocrSheet.view];
+        }]];
+
+        TOTranslationManager *innerTM = TOTranslationManager.shared;
+        NSString *replacementTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"الكلمات البديله"), (innerTM.replacementWordsEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", replacementTitle] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [self showReplacementWordsSettings];
         }]];
 
         [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"إعدادات مظهر OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRAppearanceSettings]; }]];
