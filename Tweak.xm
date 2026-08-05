@@ -58,6 +58,24 @@ static BOOL TOIsLiveModeSessionActiveFast(void) {
     return (gTOTranslationTapModeSnapshot == TOTranslationTapModeLive) && gTOLiveTranslateEnabledSnapshot;
 }
 
+static NSString *TOPrepareOCRMultilineText(NSString *inputText) {
+    if (inputText.length == 0) return @"";
+
+    NSString *normalized = [[inputText stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"] stringByReplacingOccurrencesOfString:@"\r" withString:@"\n"];
+    NSArray<NSString *> *paragraphs = [normalized componentsSeparatedByString:@"\n\n"];
+    NSMutableArray<NSString *> *cleanParagraphs = [NSMutableArray arrayWithCapacity:paragraphs.count];
+
+    for (NSString *paragraph in paragraphs) {
+        NSString *lineMerged = [[paragraph stringByReplacingOccurrencesOfString:@"\n" withString:@" "] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (lineMerged.length > 0) [cleanParagraphs addObject:lineMerged];
+    }
+
+    if (cleanParagraphs.count == 0) {
+        return [inputText stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    }
+    return [cleanParagraphs componentsJoinedByString:@"\n\n"];
+}
+
 static NSString *TOCollapseWhitespace(NSString *text) {
     if (text.length == 0) return @"";
     NSArray<NSString *> *parts = [text componentsSeparatedByCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
@@ -385,7 +403,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 - (UIColor *)ocrManualUIColor;
 - (UIColor *)ocrBackgroundUIColor;
 - (void)translateText:(NSString *)text completion:(void (^)(NSString *translated))completion;
-- (void)translateLiveOCRText:(NSString *)text completion:(void (^)(NSString *translated))completion;
+- (void)translateOCRText:(NSString *)text completion:(void (^)(NSString *translated))completion;
 @end
 
 @implementation TOTranslationManager
@@ -519,14 +537,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     BOOL mangaMultiline = self.mangaTranslationModeEnabled && [inputText containsString:@"\n"];
     NSString *preparedText = inputText;
     if (mangaMultiline) {
-        NSString *normalized = [[inputText stringByReplacingOccurrencesOfString:@"\r\n" withString:@"\n"] stringByReplacingOccurrencesOfString:@"\r" withString:@"\n"];
-        NSArray<NSString *> *paragraphs = [normalized componentsSeparatedByString:@"\n\n"];
-        NSMutableArray<NSString *> *cleanParagraphs = [NSMutableArray arrayWithCapacity:paragraphs.count];
-        for (NSString *paragraph in paragraphs) {
-            NSString *lineMerged = [[paragraph stringByReplacingOccurrencesOfString:@"\n" withString:@" "] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-            if (lineMerged.length > 0) [cleanParagraphs addObject:lineMerged];
-        }
-        if (cleanParagraphs.count > 0) preparedText = [cleanParagraphs componentsJoinedByString:@"\n\n"];
+        preparedText = TOPrepareOCRMultilineText(inputText);
     }
 
     if (!TOShouldTranslateText(preparedText)) {
@@ -628,7 +639,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     }] resume];
 }
 
-- (void)translateLiveOCRText:(NSString *)text completion:(void (^)(NSString *translated))completion {
+- (void)translateOCRText:(NSString *)text completion:(void (^)(NSString *translated))completion {
     NSString *original = text ?: @"";
     NSString *prepared = TOPrepareLiveOCRSourceText(original);
     if (!TOShouldTranslateText(prepared)) {
@@ -1798,7 +1809,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
             for (NSMutableDictionary *item in translated) {
                 NSString *line = item[@"source"];
                 dispatch_group_enter(g);
-                [[TOTranslationManager shared] translateLiveOCRText:line completion:^(NSString *text) {
+                [[TOTranslationManager shared] translateOCRText:line completion:^(NSString *text) {
                     item[@"translated"] = text.length > 0 ? text : line;
                     dispatch_group_leave(g);
                 }];
@@ -1886,7 +1897,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
             for (NSMutableDictionary *item in translated) {
                 NSString *line = item[@"source"];
                 dispatch_group_enter(g);
-                [[TOTranslationManager shared] translateText:line completion:^(NSString *text) {
+                [[TOTranslationManager shared] translateOCRText:line completion:^(NSString *text) {
                     item[@"translated"] = text.length > 0 ? text : line;
                     dispatch_group_leave(g);
                 }];
@@ -3062,7 +3073,6 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.liveScrollActive = NO;
         self.liveLastScrollSignalTime = 0;
         self.liveTouchActive = NO;
-        self.liveTouchResumeGeneration++;
         if (self.liveScrollSettleTimer) {
             [self.liveScrollSettleTimer invalidate];
             self.liveScrollSettleTimer = nil;
