@@ -502,7 +502,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     self.ocrBackgroundBrightness = (bgBri >= 0.0 && bgBri <= 1.0) ? bgBri : 0.28;
 
     CGFloat resumeDelay = [d doubleForKey:kTOLiveTouchResumeDelayKey];
-    self.liveTouchResumeDelay = (resumeDelay >= 0.0 && resumeDelay <= 1.2) ? resumeDelay : 0.20;
+    self.liveTouchResumeDelay = (resumeDelay >= 0.0 && resumeDelay <= 5.0) ? resumeDelay : 0.20;
 }
 
 - (void)saveSettings {
@@ -532,7 +532,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     [d setDouble:MIN(MAX(self.ocrBackgroundHue, 0.0), 1.0) forKey:kTOOCRBackgroundHueKey];
     [d setDouble:MIN(MAX(self.ocrBackgroundSaturation, 0.0), 1.0) forKey:kTOOCRBackgroundSaturationKey];
     [d setDouble:MIN(MAX(self.ocrBackgroundBrightness, 0.0), 1.0) forKey:kTOOCRBackgroundBrightnessKey];
-    [d setDouble:MIN(MAX(self.liveTouchResumeDelay, 0.0), 1.2) forKey:kTOLiveTouchResumeDelayKey];
+    [d setDouble:MIN(MAX(self.liveTouchResumeDelay, 0.0), 5.0) forKey:kTOLiveTouchResumeDelayKey];
     [d synchronize];
 }
 
@@ -844,7 +844,7 @@ static void TOWarmupUILocalization(void) {
             @"لون الخلفية: التشبع", @"تعتيم الخلفية", @"تعتيم خلفية النص", @"رجوع", @"إلغاء",
             @"تم", @"إغلاق", @"حفظ", @"تحرير", @"تحرير نص OCR", @"حجم نص OCR", @"نتيجة OCR", @"المصدر", @"الهدف",
             @"جارٍ التقاط الصفحة وتحليلها...", @"تمت محاولة الترجمة",
-            @"مهلة استئناف الترجمه المباشره بعد اللمس", @"كلما زادت المهلة، يصبح التمرير أكثر سلاسة", @"تم ضبط مهلة الاستئناف",
+            @"زمن تأخير الترجمة المباشره", @"ادخل الزمن بالمللي ثانية", @"تم ضبط زمن التأخير",
             @"تحرير ترجمة الترجمه المباشره", @"فعّل تحرير النص بعد ترجمة OCR أولاً", @"لا يوجد نص مباشر لتحريره الآن"
         ];
     });
@@ -1279,6 +1279,7 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 @property (nonatomic, strong) NSMutableArray<NSMutableDictionary *> *items;
 @property (nonatomic, strong) UIImageView *imageView;
 @property (nonatomic, copy) void (^onItemsChanged)(NSArray<NSMutableDictionary *> *items, UIImage *renderedImage);
+@property (nonatomic, copy) dispatch_block_t onDismiss;
 @end
 
 @implementation TOOCRResultsViewController
@@ -1362,7 +1363,10 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     TOTranslateControllerTree(self);
 }
 
-- (void)closePressed { [self dismissViewControllerAnimated:YES completion:nil]; }
+- (void)closePressed {
+    if (self.onDismiss) self.onDismiss();
+    [self dismissViewControllerAnimated:YES completion:nil];
+}
 
 - (void)editPressed {
     TOOCRTextEditorViewController *editor = [TOOCRTextEditorViewController new];
@@ -2064,6 +2068,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, assign) BOOL liveScrollActive;
 @property (nonatomic, assign) NSTimeInterval liveLastScrollSignalTime;
 @property (nonatomic, assign) BOOL liveTouchActive;
+@property (nonatomic, assign) BOOL liveEditorSessionActive;
 @property (nonatomic, assign) NSUInteger liveTouchResumeGeneration;
 @property (nonatomic, strong) NSTimer *appTranslateTimer;
 @property (nonatomic, assign) NSUInteger appTranslateBurstGeneration;
@@ -2942,6 +2947,8 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     UIWindow *w = self.attachedWindow ?: TOActiveWindow();
     if (!w) return;
 
+    if (self.liveEditorSessionActive) return;
+
     if (self.liveTouchActive || self.liveScrollActive) {
         self.liveOCRNeedsRefresh = YES;
         self.liveScrollPendingRefresh = YES;
@@ -3057,6 +3064,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 - (void)beginLiveTouchInteraction {
     TOTranslationManager *m = [TOTranslationManager shared];
     if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) return;
+    if (self.liveEditorSessionActive) return;
 
     self.liveTouchResumeGeneration++;
     self.liveTouchActive = YES;
@@ -3066,6 +3074,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
 - (void)endLiveTouchInteractionIfNeeded {
     if (!self.liveTouchActive) return;
+    if (self.liveEditorSessionActive) return;
     self.liveTouchActive = NO;
 
     TOTranslationManager *m = [TOTranslationManager shared];
@@ -3073,7 +3082,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     if (self.liveScrollActive || self.liveScrollSettleTimer) return;
 
     NSTimeInterval now = CACurrentMediaTime();
-    NSTimeInterval delay = MIN(MAX(m.liveTouchResumeDelay, 0.0), 1.2);
+    NSTimeInterval delay = MIN(MAX(m.liveTouchResumeDelay, 0.0), 5.0);
     self.liveScrollInteractionUntil = MAX(self.liveScrollInteractionUntil, now + delay);
     NSUInteger token = ++self.liveTouchResumeGeneration;
 
@@ -3167,6 +3176,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.liveScrollActive = NO;
         self.liveLastScrollSignalTime = 0;
         self.liveTouchActive = NO;
+        self.liveEditorSessionActive = NO;
         if (self.liveScrollSettleTimer) {
             [self.liveScrollSettleTimer invalidate];
             self.liveScrollSettleTimer = nil;
@@ -3215,12 +3225,6 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         }]];
     }
 
-    NSTimeInterval delayMs = round(MIN(MAX(m.liveTouchResumeDelay, 0.0), 1.2) * 1000.0);
-    NSString *delayTitle = [NSString stringWithFormat:@"%@ (%dms) ▸", TOUIString(@"مهلة استئناف الترجمه المباشره بعد اللمس"), (int)delayMs];
-    [sheet addAction:[UIAlertAction actionWithTitle:delayTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-        [self showLiveTouchResumeDelaySettings];
-    }]];
-
     [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", TOUIString(@"تحرير ترجمة الترجمه المباشره")] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
         [self showLiveTranslationEditor];
     }]];
@@ -3252,6 +3256,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     vc.items = TODeepMutableCopyOCRItems(items);
     vc.screenshot = [[TOPageOCRController shared] renderTranslatedTextOnImage:base items:vc.items];
 
+    self.liveEditorSessionActive = YES;
+    self.liveTouchActive = NO;
+
     __weak typeof(self) weakSelf = self;
     vc.onItemsChanged = ^(NSArray<NSMutableDictionary *> *updatedItems, UIImage *renderedImage) {
         __strong typeof(weakSelf) self = weakSelf;
@@ -3266,6 +3273,17 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         }
     };
 
+    vc.onDismiss = ^{
+        __strong typeof(weakSelf) self = weakSelf;
+        if (!self) return;
+        self.liveEditorSessionActive = NO;
+        TOTranslationManager *inner = [TOTranslationManager shared];
+        if (inner.translationTapMode == TOTranslationTapModeLive && self.liveTranslateEnabled) {
+            self.liveScrollPendingRefresh = YES;
+            [self requestLiveOCROverlayRefresh];
+        }
+    };
+
     UIViewController *top = TOTopViewController();
     if (top) [top presentViewController:vc animated:YES completion:nil];
 }
@@ -3275,26 +3293,30 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     if (!top) return;
 
     TOTranslationManager *m = [TOTranslationManager shared];
-    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TOUIString(@"مهلة استئناف الترجمه المباشره بعد اللمس")
-                                                                   message:TOUIString(@"كلما زادت المهلة، يصبح التمرير أكثر سلاسة")
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+    UIAlertController *alert = [UIAlertController alertControllerWithTitle:TOUIString(@"زمن تأخير الترجمة المباشره")
+                                                                   message:TOUIString(@"ادخل الزمن بالمللي ثانية")
+                                                            preferredStyle:UIAlertControllerStyleAlert];
 
-    NSArray<NSNumber *> *delays = @[@0.10, @0.20, @0.35, @0.50];
-    for (NSNumber *value in delays) {
-        NSTimeInterval option = value.doubleValue;
-        BOOL selected = fabs(m.liveTouchResumeDelay - option) < 0.01;
-        NSString *title = [NSString stringWithFormat:@"%dms%@", (int)lround(option * 1000.0), (selected ? @" ✓" : @"")];
-        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-            m.liveTouchResumeDelay = option;
-            [m saveSettings];
-            [self showToast:[NSString stringWithFormat:@"%@: %dms", TOUIString(@"تم ضبط مهلة الاستئناف"), (int)lround(option * 1000.0)]];
-        }]];
-    }
+    [alert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+        field.keyboardType = UIKeyboardTypeDecimalPad;
+        field.placeholder = @"200";
+        field.text = [NSString stringWithFormat:@"%d", (int)lround(MIN(MAX(m.liveTouchResumeDelay, 0.0), 5.0) * 1000.0)];
+    }];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
-    [self configurePopover:sheet];
-    [top presentViewController:sheet animated:YES completion:^{
-        TOTranslateControllerTree(sheet);
+    [alert addAction:[UIAlertAction actionWithTitle:TOUIString(@"إلغاء") style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:TOUIString(@"حفظ") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        NSString *raw = [alert.textFields.firstObject.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        double delayMs = [raw doubleValue];
+        if (delayMs < 0.0) delayMs = 0.0;
+        if (delayMs > 5000.0) delayMs = 5000.0;
+
+        m.liveTouchResumeDelay = delayMs / 1000.0;
+        [m saveSettings];
+        [self showToast:[NSString stringWithFormat:@"%@: %dms", TOUIString(@"تم ضبط زمن التأخير"), (int)lround(delayMs)]];
+    }]];
+
+    [top presentViewController:alert animated:YES completion:^{
+        TOTranslateControllerTree(alert);
     }];
 }
 
@@ -3396,6 +3418,12 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         NSString *modeTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"نمط الترجمه"), TOTranslationModeLabel((TOTranslationTapMode)tm.translationTapMode)];
         [ocrSheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", modeTitle] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
             [self showTranslationModeSettings];
+        }]];
+
+        NSTimeInterval delayMs = round(MIN(MAX(tm.liveTouchResumeDelay, 0.0), 5.0) * 1000.0);
+        NSString *delayTitle = [NSString stringWithFormat:@"%@ (%dms) ▸", TOUIString(@"زمن تأخير الترجمة المباشره"), (int)delayMs];
+        [ocrSheet addAction:[UIAlertAction actionWithTitle:delayTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            [self showLiveTouchResumeDelaySettings];
         }]];
 
         [ocrSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"إعدادات مظهر OCR") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showOCRAppearanceSettings]; }]];
