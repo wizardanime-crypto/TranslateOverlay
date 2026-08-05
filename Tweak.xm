@@ -916,8 +916,9 @@ static void TOWarmupUILocalization(void) {
             @"زمن تأخير الترجمة المباشره", @"ادخل الزمن بالمللي ثانية", @"تم ضبط زمن التأخير",
             @"تحرير الترجمه المباشره", @"فعّل تحرير النص بعد ترجمة OCR أولاً", @"لا يوجد نص مباشر لتحريره الآن",
             @"الكلمات البديله", @"تفعيل الكلمات البديله", @"إضافة كلمة بديلة", @"الكلمة الأصلية", @"الكلمة البديلة",
-            @"تحرير متعدد (سطر لكل كلمة)", @"مسح الكلمات البديله", @"تم حفظ الكلمات البديله", @"عدد الكلمات البديله", @"تم مسح الكلمات البديله",
-            @"مفعل", @"معطل"
+            @"تحرير متعدد (سطر لكل كلمة)", @"تحرير الكلمات البديله", @"تم حفظ الكلمات البديله", @"عدد الكلمات البديله",
+            @"مفعل", @"معطل", @"لا توجد كلمات بديله", @"اختر كلمة لحذفها أو احذف الكل", @"تم حذف الكلمة البديله",
+            @"تحديد الكل للحذف", @"تأكيد", @"سيتم حذف جميع الكلمات البديله", @"حذف", @"تم حذف جميع الكلمات البديله"
         ];
     });
 
@@ -2200,6 +2201,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)endLiveTouchInteractionIfNeeded;
 - (void)showLiveTouchResumeDelaySettings;
 - (void)showReplacementWordsSettings;
+- (void)showReplacementWordsEditor;
 - (void)syncLiveTranslationLoopState;
 - (void)liveTranslationTimerFired;
 - (void)scheduleLiveTranslationBurst;
@@ -3574,12 +3576,70 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [top presentViewController:editor animated:YES completion:nil];
     }]];
 
-    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"مسح الكلمات البديله") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
+    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"تحرير الكلمات البديله") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+        [self showReplacementWordsEditor];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
+    [self configurePopover:sheet];
+    [top presentViewController:sheet animated:YES completion:^{
+        TOTranslateControllerTree(sheet);
+    }];
+}
+
+- (void)showReplacementWordsEditor {
+    UIViewController *top = TOTopViewController();
+    if (!top) return;
+
+    TOTranslationManager *m = [TOTranslationManager shared];
+    NSArray<NSString *> *keys = @[];
+    @synchronized (m) {
+        keys = [[m.replacementWordsMap allKeys] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
+    }
+
+    if (keys.count == 0) {
+        [self showToast:TOUIString(@"لا توجد كلمات بديله")];
+        return;
+    }
+
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TOUIString(@"تحرير الكلمات البديله")
+                                                                   message:TOUIString(@"اختر كلمة لحذفها أو احذف الكل")
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    for (NSString *from in keys) {
+        NSString *to = nil;
         @synchronized (m) {
-            [m.replacementWordsMap removeAllObjects];
+            to = m.replacementWordsMap[from];
         }
-        [m saveSettings];
-        [self showToast:TOUIString(@"تم مسح الكلمات البديله")];
+        if (to.length == 0) continue;
+
+        NSString *title = [NSString stringWithFormat:@"%@ → %@", from, to];
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
+            @synchronized (m) {
+                [m.replacementWordsMap removeObjectForKey:from];
+            }
+            [m saveSettings];
+            [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"تم حذف الكلمة البديله"), from]];
+            [self showReplacementWordsEditor];
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"تحديد الكل للحذف") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
+        UIAlertController *confirm = [UIAlertController alertControllerWithTitle:TOUIString(@"تأكيد")
+                                                                          message:TOUIString(@"سيتم حذف جميع الكلمات البديله")
+                                                                   preferredStyle:UIAlertControllerStyleAlert];
+        [confirm addAction:[UIAlertAction actionWithTitle:TOUIString(@"إلغاء") style:UIAlertActionStyleCancel handler:nil]];
+        [confirm addAction:[UIAlertAction actionWithTitle:TOUIString(@"حذف") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *confirmAction) {
+            @synchronized (m) {
+                [m.replacementWordsMap removeAllObjects];
+            }
+            [m saveSettings];
+            [self showToast:TOUIString(@"تم حذف جميع الكلمات البديله")];
+        }]];
+
+        [top presentViewController:confirm animated:YES completion:^{
+            TOTranslateControllerTree(confirm);
+        }];
     }]];
 
     [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
