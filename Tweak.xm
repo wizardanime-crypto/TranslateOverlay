@@ -439,6 +439,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 - (void)saveSettings;
 - (void)clearTranslationCachesOnly;
 - (void)restoreFactoryDefaultsAndClearAllData;
+- (NSUInteger)clearAllLiveCorrections;
 - (UIColor *)ocrManualUIColor;
 - (UIColor *)ocrBackgroundUIColor;
 - (void)translateText:(NSString *)text completion:(void (^)(NSString *translated))completion;
@@ -478,19 +479,11 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         }
     }
 
-    NSDictionary *storedCorrections = [d dictionaryForKey:kTOLiveOCRCorrectionsKey];
-    if ([storedCorrections isKindOfClass:[NSDictionary class]]) {
-        @synchronized (self) {
-            [self.liveOCRCorrections removeAllObjects];
-            for (id key in storedCorrections) {
-                if (![key isKindOfClass:[NSString class]]) continue;
-                id value = storedCorrections[key];
-                if (![value isKindOfClass:[NSString class]]) continue;
-                if (((NSString *)value).length == 0) continue;
-                self.liveOCRCorrections[(NSString *)key] = (NSString *)value;
-            }
-        }
+    // Live OCR edits are session-only; keep them in memory and drop persisted leftovers.
+    @synchronized (self) {
+        [self.liveOCRCorrections removeAllObjects];
     }
+    [d removeObjectForKey:kTOLiveOCRCorrectionsKey];
 
     NSNumber *replacementEnabled = [d objectForKey:kTOReplacementWordsEnabledKey];
     self.replacementWordsEnabled = replacementEnabled ? [replacementEnabled boolValue] : NO;
@@ -560,15 +553,12 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     [d setObject:self.sourceLanguage ?: @"auto" forKey:kTOSourceLanguageKey];
     [d setObject:self.targetLanguage ?: @"ar" forKey:kTOTargetLanguageKey];
     NSDictionary *cacheSnapshot = nil;
-    NSDictionary *correctionsSnapshot = nil;
     NSDictionary *replacementMapSnapshot = nil;
     @synchronized (self) {
         cacheSnapshot = [self.persistentCache copy] ?: @{};
-        correctionsSnapshot = [self.liveOCRCorrections copy] ?: @{};
         replacementMapSnapshot = [self.replacementWordsMap copy] ?: @{};
     }
     [d setObject:cacheSnapshot forKey:kTOTranslationCacheKey];
-    [d setObject:correctionsSnapshot forKey:kTOLiveOCRCorrectionsKey];
     [d setBool:self.replacementWordsEnabled forKey:kTOReplacementWordsEnabledKey];
     [d setObject:replacementMapSnapshot forKey:kTOReplacementWordsMapKey];
 
@@ -588,6 +578,15 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     [d setDouble:MIN(MAX(self.ocrBackgroundBrightness, 0.0), 1.0) forKey:kTOOCRBackgroundBrightnessKey];
     [d setDouble:MIN(MAX(self.liveTouchResumeDelay, 0.0), 5.0) forKey:kTOLiveTouchResumeDelayKey];
     [d synchronize];
+}
+
+- (NSUInteger)clearAllLiveCorrections {
+    __block NSUInteger removedCount = 0;
+    @synchronized (self) {
+        removedCount = self.liveOCRCorrections.count;
+        [self.liveOCRCorrections removeAllObjects];
+    }
+    return removedCount;
 }
 
 - (void)clearTranslationCachesOnly {
@@ -879,7 +878,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         }
     }
 
-    if (changed) [self saveSettings];
+    (void)changed;
 }
 
 - (NSUInteger)clearLiveCorrectionsForItems:(NSArray<NSDictionary *> *)items {
@@ -904,7 +903,6 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         }
     }
 
-    if (removedCount > 0) [self saveSettings];
     return removedCount;
 }
 
@@ -3437,6 +3435,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         }
         if (didCreateTimer) [self scheduleLiveTranslationBurst];
     } else {
+        [m clearAllLiveCorrections];
         self.liveTranslateBurstGeneration++;
         self.liveOCRGeneration++;
         self.liveOCRNeedsRefresh = NO;
