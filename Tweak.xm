@@ -2586,14 +2586,14 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                 }
             }
 
-            if (items.count > 1) {
-                items = [[self mergedMangaBlocksFromItems:items] mutableCopy];
-            }
-
             TOTranslationManager *postMergeStyleSettings = [TOTranslationManager shared];
-            if (postMergeStyleSettings.smartCompatibilityEnabled && (postMergeStyleSettings.ocrAutoColorEnabled || postMergeStyleSettings.ocrBackgroundAutoColorEnabled)) {
-                for (NSMutableDictionary *item in items) {
-                    [self applySmartCompatibilityStyleToItem:item image:image settings:postMergeStyleSettings];
+            if (postMergeStyleSettings.mangaTranslationModeEnabled && items.count > 1) {
+                items = [[self mergedMangaBlocksFromItems:items] mutableCopy];
+
+                if (postMergeStyleSettings.smartCompatibilityEnabled && (postMergeStyleSettings.ocrAutoColorEnabled || postMergeStyleSettings.ocrBackgroundAutoColorEnabled)) {
+                    for (NSMutableDictionary *item in items) {
+                        [self applySmartCompatibilityStyleToItem:item image:image settings:postMergeStyleSettings];
+                    }
                 }
             }
 
