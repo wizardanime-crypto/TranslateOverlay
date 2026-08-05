@@ -445,7 +445,6 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 - (void)translateText:(NSString *)text completion:(void (^)(NSString *translated))completion;
 - (void)translateOCRText:(NSString *)text completion:(void (^)(NSString *translated))completion;
 - (void)applyLiveCorrectionsFromItems:(NSArray<NSDictionary *> *)items;
-- (NSUInteger)clearLiveCorrectionsForItems:(NSArray<NSDictionary *> *)items;
 - (NSString *)applyReplacementWordsToText:(NSString *)text;
 @end
 
@@ -881,31 +880,6 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     (void)changed;
 }
 
-- (NSUInteger)clearLiveCorrectionsForItems:(NSArray<NSDictionary *> *)items {
-    if (items.count == 0) return 0;
-
-    NSString *target = self.targetLanguage ?: @"ar";
-    NSUInteger removedCount = 0;
-
-    @synchronized (self) {
-        for (NSDictionary *item in items) {
-            if (![item isKindOfClass:[NSDictionary class]]) continue;
-
-            NSString *source = item[@"source"];
-            NSString *prepared = TOPrepareLiveOCRSourceText(source ?: @"");
-            if (!TOShouldTranslateText(prepared)) continue;
-
-            NSString *key = [NSString stringWithFormat:@"%@|%@", target, prepared];
-            if (self.liveOCRCorrections[key] != nil) {
-                [self.liveOCRCorrections removeObjectForKey:key];
-                removedCount++;
-            }
-        }
-    }
-
-    return removedCount;
-}
-
 - (NSString *)applyReplacementWordsToText:(NSString *)text {
     if (text.length == 0) return text ?: @"";
     if (!self.replacementWordsEnabled) return text;
@@ -1045,8 +1019,7 @@ static void TOWarmupUILocalization(void) {
             @"تحديد الكل للحذف", @"تأكيد", @"سيتم حذف جميع الكلمات البديله", @"حذف", @"تم حذف جميع الكلمات البديله",
             @"تأكيد الحذف", @"هل أنت متأكد من حذف هذه الكلمة؟", @"نعم", @"لا",
             @"مسح الذاكرة المؤقته", @"تم مسح الذاكرة المؤقته", @"هل تريد مسح الذاكرة المؤقته؟",
-            @"استعادة ضبط المصنع", @"تمت استعادة ضبط المصنع", @"هل أنت متأكد من استعادة ضبط المصنع؟ سيتم حذف كل البيانات المخزنة.",
-            @"تم حذف تعديلات الترجمة المخزنة", @"لا توجد تعديلات ترجمة مخزنة"
+            @"استعادة ضبط المصنع", @"تمت استعادة ضبط المصنع", @"هل أنت متأكد من استعادة ضبط المصنع؟ سيتم حذف كل البيانات المخزنة."
         ];
     });
 
@@ -1492,7 +1465,6 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 @property (nonatomic, strong) UIImage *baseImage;
 @property (nonatomic, strong) NSMutableArray<NSMutableDictionary *> *items;
 @property (nonatomic, strong) UIImageView *imageView;
-@property (nonatomic, strong) NSArray<NSString *> *originalTranslatedBlocks;
 @property (nonatomic, copy) void (^onItemsChanged)(NSArray<NSMutableDictionary *> *items, UIImage *renderedImage);
 @property (nonatomic, copy) dispatch_block_t onDismiss;
 @end
@@ -1515,28 +1487,6 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         NSString *edited = [parts[i] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
         if (edited.length > 0) self.items[i][@"translated"] = edited;
     }
-}
-
-- (void)captureOriginalTranslatedBlocksIfNeeded {
-    if (self.originalTranslatedBlocks.count > 0) return;
-    NSMutableArray<NSString *> *blocks = [NSMutableArray arrayWithCapacity:self.items.count];
-    for (NSDictionary *item in self.items) {
-        NSString *translated = item[@"translated"];
-        if (translated.length == 0) translated = item[@"source"] ?: @"";
-        [blocks addObject:translated ?: @""];
-    }
-    self.originalTranslatedBlocks = [blocks copy];
-}
-
-- (void)restoreOriginalTranslatedBlocks {
-    if (self.originalTranslatedBlocks.count == 0) return;
-    NSInteger count = MIN((NSInteger)self.items.count, (NSInteger)self.originalTranslatedBlocks.count);
-    for (NSInteger i = 0; i < count; i++) {
-        NSString *original = self.originalTranslatedBlocks[i] ?: @"";
-        self.items[i][@"translated"] = original;
-    }
-    [self refreshRenderedImage];
-    if (self.onItemsChanged) self.onItemsChanged(self.items, self.imageView.image);
 }
 
 - (void)refreshRenderedImage {
@@ -1570,17 +1520,6 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     [close addTarget:self action:@selector(closePressed) forControlEvents:UIControlEventTouchUpInside];
     [self.view addSubview:close];
 
-    UIButton *restore = [UIButton buttonWithType:UIButtonTypeSystem];
-    restore.frame = CGRectMake(12, 42, 30, 30);
-    restore.autoresizingMask = UIViewAutoresizingFlexibleRightMargin;
-    [restore setTitle:@"🔄" forState:UIControlStateNormal];
-    restore.titleLabel.font = [UIFont systemFontOfSize:15 weight:UIFontWeightSemibold];
-    [restore setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-    restore.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.12];
-    restore.layer.cornerRadius = 8;
-    [restore addTarget:self action:@selector(restoreOriginalPressed) forControlEvents:UIControlEventTouchUpInside];
-    [self.view addSubview:restore];
-
     if ([TOTranslationManager shared].ocrEditAfterTranslateEnabled) {
         UIButton *edit = [UIButton buttonWithType:UIButtonTypeSystem];
         edit.frame = CGRectMake(self.view.bounds.size.width - 170, 40, 72, 36);
@@ -1602,8 +1541,6 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     imageView.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.04];
     self.imageView = imageView;
     [self.view addSubview:imageView];
-
-    [self captureOriginalTranslatedBlocksIfNeeded];
 
     [self refreshRenderedImage];
 }
@@ -1631,22 +1568,6 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         if (self.onItemsChanged) self.onItemsChanged(self.items, self.imageView.image);
     };
     [self presentViewController:editor animated:YES completion:nil];
-}
-
-- (void)restoreOriginalPressed {
-    NSUInteger removed = [[TOTranslationManager shared] clearLiveCorrectionsForItems:self.items];
-    [self restoreOriginalTranslatedBlocks];
-
-    Class overlayClass = NSClassFromString(@"TOFloatingOverlayController");
-    if (overlayClass && [overlayClass respondsToSelector:@selector(shared)]) {
-        id overlay = ((id (*)(id, SEL))objc_msgSend)(overlayClass, @selector(shared));
-        if (overlay && [overlay respondsToSelector:@selector(showToast:)]) {
-            NSString *message = (removed > 0)
-                ? TOUIString(@"تم حذف تعديلات الترجمة المخزنة")
-                : TOUIString(@"لا توجد تعديلات ترجمة مخزنة");
-            ((void (*)(id, SEL, NSString *))objc_msgSend)(overlay, @selector(showToast:), message);
-        }
-    }
 }
 
 @end
