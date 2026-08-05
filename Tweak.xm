@@ -30,6 +30,7 @@ static NSString * const kTOOCRBackgroundAlphaKey = @"to_ocr_background_alpha";
 static NSString * const kTOOCRBackgroundHueKey = @"to_ocr_background_hue";
 static NSString * const kTOOCRBackgroundSaturationKey = @"to_ocr_background_saturation";
 static NSString * const kTOOCRBackgroundBrightnessKey = @"to_ocr_background_brightness";
+static NSString * const kTOSmartCompatibilityEnabledKey = @"to_smart_compatibility_enabled";
 static NSString * const kTOLiveTouchResumeDelayKey = @"to_live_touch_resume_delay";
 static NSString * const kTOLiveOCRCorrectionsKey = @"to_live_ocr_corrections";
 static NSString * const kTOReplacementWordsEnabledKey = @"to_replacement_words_enabled";
@@ -432,6 +433,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 @property (nonatomic, assign) CGFloat ocrBackgroundHue;
 @property (nonatomic, assign) CGFloat ocrBackgroundSaturation;
 @property (nonatomic, assign) CGFloat ocrBackgroundBrightness;
+@property (nonatomic, assign) BOOL smartCompatibilityEnabled;
 @property (nonatomic, assign) NSTimeInterval liveTouchResumeDelay;
 
 + (instancetype)shared;
@@ -543,6 +545,9 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     self.ocrBackgroundSaturation = (bgSat >= 0.0 && bgSat <= 1.0) ? bgSat : 0.0;
     self.ocrBackgroundBrightness = (bgBri >= 0.0 && bgBri <= 1.0) ? bgBri : 0.28;
 
+    NSNumber *smartCompatibility = [d objectForKey:kTOSmartCompatibilityEnabledKey];
+    self.smartCompatibilityEnabled = smartCompatibility ? [smartCompatibility boolValue] : NO;
+
     CGFloat resumeDelay = [d doubleForKey:kTOLiveTouchResumeDelayKey];
     self.liveTouchResumeDelay = (resumeDelay >= 0.0 && resumeDelay <= 5.0) ? resumeDelay : 0.20;
 }
@@ -575,6 +580,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     [d setDouble:MIN(MAX(self.ocrBackgroundHue, 0.0), 1.0) forKey:kTOOCRBackgroundHueKey];
     [d setDouble:MIN(MAX(self.ocrBackgroundSaturation, 0.0), 1.0) forKey:kTOOCRBackgroundSaturationKey];
     [d setDouble:MIN(MAX(self.ocrBackgroundBrightness, 0.0), 1.0) forKey:kTOOCRBackgroundBrightnessKey];
+    [d setBool:self.smartCompatibilityEnabled forKey:kTOSmartCompatibilityEnabledKey];
     [d setDouble:MIN(MAX(self.liveTouchResumeDelay, 0.0), 5.0) forKey:kTOLiveTouchResumeDelayKey];
     [d synchronize];
 }
@@ -627,6 +633,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     self.ocrBackgroundHue = 0.0;
     self.ocrBackgroundSaturation = 0.0;
     self.ocrBackgroundBrightness = 0.28;
+    self.smartCompatibilityEnabled = NO;
     self.liveTouchResumeDelay = 0.20;
 
     TOUpdateTranslationModeSnapshot(self.translationTapMode, NO);
@@ -652,6 +659,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         kTOOCRBackgroundHueKey,
         kTOOCRBackgroundSaturationKey,
         kTOOCRBackgroundBrightnessKey,
+        kTOSmartCompatibilityEnabledKey,
         kTOLiveTouchResumeDelayKey,
         kTOLiveOCRCorrectionsKey,
         kTOReplacementWordsEnabledKey,
@@ -1009,6 +1017,7 @@ static void TOWarmupUILocalization(void) {
             @"تفعيل اللون التلقائي لخلفية النص", @"تعطيل اللون التلقائي لخلفية النص",
             @"لون النص: الدرجة اللونية", @"لون النص: التشبع", @"لون الخلفية: الدرجة اللونية",
             @"لون الخلفية: التشبع", @"تعتيم الخلفية", @"تعتيم خلفية النص", @"رجوع", @"إلغاء",
+            @"التوافق الذكي", @"تم تفعيل التوافق الذكي", @"تم تعطيل التوافق الذكي",
             @"تم", @"إغلاق", @"حفظ", @"تحرير", @"تحرير نص OCR", @"حجم نص OCR", @"نتيجة OCR", @"المصدر", @"الهدف",
             @"جارٍ التقاط الصفحة وتحليلها...", @"تمت محاولة الترجمة",
             @"زمن تأخير الترجمة المباشره", @"ادخل الزمن بالمللي ثانية", @"تم ضبط زمن التأخير",
@@ -1318,6 +1327,65 @@ static CGFloat TOFittedFontSizeForText(NSString *text, CGRect rect, CGFloat minS
     return MAX(minSize, size);
 }
 
+static void TODrawVerticalGradient(CGContextRef ctx, CGRect rect, UIColor *startColor, UIColor *endColor, UIBezierPath *clipPath) {
+    if (!ctx || CGRectIsEmpty(rect)) return;
+    UIColor *s = startColor ?: endColor;
+    UIColor *e = endColor ?: startColor;
+    if (!s || !e) return;
+
+    CGFloat sr = 0, sg = 0, sb = 0, sa = 0;
+    CGFloat er = 0, eg = 0, eb = 0, ea = 0;
+    if (![s getRed:&sr green:&sg blue:&sb alpha:&sa]) return;
+    if (![e getRed:&er green:&eg blue:&eb alpha:&ea]) return;
+
+    CGFloat components[] = { sr, sg, sb, sa, er, eg, eb, ea };
+    CGFloat locations[] = { 0.0, 1.0 };
+    CGColorSpaceRef colorSpace = CGColorSpaceCreateDeviceRGB();
+    if (!colorSpace) return;
+    CGGradientRef gradient = CGGradientCreateWithColorComponents(colorSpace, components, locations, 2);
+    CGColorSpaceRelease(colorSpace);
+    if (!gradient) return;
+
+    CGContextSaveGState(ctx);
+    if (clipPath) [clipPath addClip];
+    CGPoint startPoint = CGPointMake(CGRectGetMidX(rect), CGRectGetMinY(rect));
+    CGPoint endPoint = CGPointMake(CGRectGetMidX(rect), CGRectGetMaxY(rect));
+    CGContextDrawLinearGradient(ctx, gradient, startPoint, endPoint, 0);
+    CGContextRestoreGState(ctx);
+
+    CGGradientRelease(gradient);
+}
+
+static BOOL TODrawGradientText(UIImage *baseImage,
+                               NSString *text,
+                               CGRect drawRect,
+                               NSDictionary *attrs,
+                               UIColor *startColor,
+                               UIColor *endColor) {
+    if (!baseImage || text.length == 0 || CGRectIsEmpty(drawRect) || !attrs || !startColor || !endColor) return NO;
+
+    CGSize canvas = baseImage.size;
+    UIGraphicsBeginImageContextWithOptions(canvas, NO, baseImage.scale);
+    NSMutableDictionary *maskAttrs = [attrs mutableCopy] ?: [NSMutableDictionary dictionary];
+    maskAttrs[NSForegroundColorAttributeName] = UIColor.whiteColor;
+    [text drawWithRect:drawRect
+              options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+           attributes:maskAttrs
+              context:nil];
+    UIImage *maskImage = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    if (!maskImage.CGImage) return NO;
+
+    CGContextRef ctx = UIGraphicsGetCurrentContext();
+    if (!ctx) return NO;
+
+    CGContextSaveGState(ctx);
+    CGContextClipToMask(ctx, drawRect, maskImage.CGImage);
+    TODrawVerticalGradient(ctx, drawRect, startColor, endColor, nil);
+    CGContextRestoreGState(ctx);
+    return YES;
+}
+
 static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictionary *> *items) {
     if (!image || items.count == 0) return image;
 
@@ -1338,17 +1406,51 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         NSString *sourceText = item[@"source"] ?: text;
         CGFloat originalFit = TOFittedFontSizeForText(sourceText, rect, 8.0, 34.0);
         CGFloat fontSize = MAX(1.0, MIN(40.0, originalFit * scale));
+
+        BOOL smartOn = m.smartCompatibilityEnabled;
         UIColor *fg = nil;
         if (m.ocrAutoColorEnabled) fg = item[@"detectedColor"];
         if (!fg) fg = [m ocrManualUIColor];
+        UIColor *fgStart = (m.ocrAutoColorEnabled && smartOn) ? item[@"detectedColorStart"] : nil;
+        UIColor *fgEnd = (m.ocrAutoColorEnabled && smartOn) ? item[@"detectedColorEnd"] : nil;
 
         CGRect bgRect = CGRectInset(rect, -2.0, -1.0);
+        if (m.ocrBackgroundAutoColorEnabled && smartOn) {
+            NSValue *bgInsetsValue = item[@"detectedBackgroundInsets"];
+            if (bgInsetsValue) {
+                UIEdgeInsets insets = [bgInsetsValue UIEdgeInsetsValue];
+                CGFloat left = MAX(0.0, insets.left);
+                CGFloat right = MAX(0.0, insets.right);
+                CGFloat top = MAX(0.0, insets.top);
+                CGFloat bottom = MAX(0.0, insets.bottom);
+                bgRect = CGRectMake(rect.origin.x - left,
+                                    rect.origin.y - top,
+                                    rect.size.width + left + right,
+                                    rect.size.height + top + bottom);
+            }
+        }
         UIColor *bgBase = nil;
         if (m.ocrBackgroundAutoColorEnabled) bgBase = item[@"detectedBackgroundColor"];
         if (!bgBase) bgBase = [m ocrBackgroundUIColor];
-        UIColor *bgColor = [bgBase colorWithAlphaComponent:MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0)];
-        [bgColor setFill];
-        [[UIBezierPath bezierPathWithRoundedRect:bgRect cornerRadius:3.0] fill];
+        UIColor *bgStart = (m.ocrBackgroundAutoColorEnabled && smartOn) ? item[@"detectedBackgroundColorStart"] : nil;
+        UIColor *bgEnd = (m.ocrBackgroundAutoColorEnabled && smartOn) ? item[@"detectedBackgroundColorEnd"] : nil;
+        CGFloat bgAlpha = MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0);
+        UIColor *bgColor = [bgBase colorWithAlphaComponent:bgAlpha];
+
+        CGFloat cornerRadius = 3.0;
+        NSNumber *cornerNumber = item[@"detectedBackgroundCornerRadius"];
+        if (smartOn && [cornerNumber isKindOfClass:[NSNumber class]]) {
+            cornerRadius = MIN(MAX(cornerNumber.doubleValue, 1.0), 12.0);
+        }
+        UIBezierPath *bgPath = [UIBezierPath bezierPathWithRoundedRect:bgRect cornerRadius:cornerRadius];
+        if (smartOn && m.ocrBackgroundAutoColorEnabled && bgStart && bgEnd) {
+            UIColor *s = [bgStart colorWithAlphaComponent:bgAlpha];
+            UIColor *e = [bgEnd colorWithAlphaComponent:bgAlpha];
+            TODrawVerticalGradient(UIGraphicsGetCurrentContext(), bgRect, s, e, bgPath);
+        } else {
+            [bgColor setFill];
+            [bgPath fill];
+        }
 
         CGRect textRect = CGRectInset(rect, 1.0, 0.0);
         NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
@@ -1379,10 +1481,16 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
             drawRect.size.height = textHeight;
         }
 
-        [text drawWithRect:drawRect
-                  options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
-               attributes:attrs
-                  context:nil];
+        BOOL drewGradientText = NO;
+        if (smartOn && m.ocrAutoColorEnabled && fgStart && fgEnd) {
+            drewGradientText = TODrawGradientText(image, text, drawRect, attrs, fgStart, fgEnd);
+        }
+        if (!drewGradientText) {
+            [text drawWithRect:drawRect
+                      options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+                   attributes:attrs
+                      context:nil];
+        }
     }
 
     UIImage *rendered = UIGraphicsGetImageFromCurrentImageContext();
@@ -1865,6 +1973,220 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
                            alpha:1.0];
 }
 
+- (UIColor *)averageColorInImage:(UIImage *)image
+                             rect:(CGRect)rect
+                     excludingColor:(UIColor *)excluded
+                       minDistance:(CGFloat)minDistance {
+    if (!image.CGImage || CGRectIsEmpty(rect)) return nil;
+
+    CGRect safe = CGRectIntersection(rect, CGRectMake(0, 0, image.size.width, image.size.height));
+    if (CGRectIsEmpty(safe) || safe.size.width < 2 || safe.size.height < 2) return nil;
+
+    CGFloat scaleX = (CGFloat)CGImageGetWidth(image.CGImage) / image.size.width;
+    CGFloat scaleY = (CGFloat)CGImageGetHeight(image.CGImage) / image.size.height;
+    CGRect pxRect = CGRectIntegral(CGRectMake(safe.origin.x * scaleX, safe.origin.y * scaleY, safe.size.width * scaleX, safe.size.height * scaleY));
+    CGImageRef cropped = CGImageCreateWithImageInRect(image.CGImage, pxRect);
+    if (!cropped) return nil;
+
+    const size_t w = 24;
+    const size_t h = 24;
+    const size_t bpp = 4;
+    const size_t bpr = w * bpp;
+    uint8_t *buf = (uint8_t *)calloc(h * bpr, sizeof(uint8_t));
+    if (!buf) {
+        CGImageRelease(cropped);
+        return nil;
+    }
+
+    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+    CGContextRef ctx = CGBitmapContextCreate(buf, w, h, 8, bpr, cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+    CGColorSpaceRelease(cs);
+    if (!ctx) {
+        free(buf);
+        CGImageRelease(cropped);
+        return nil;
+    }
+
+    CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
+    CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cropped);
+
+    CGFloat er = 0, eg = 0, eb = 0;
+    BOOL hasExcluded = TOGetRGBComponents(excluded, &er, &eg, &eb);
+
+    CGFloat sumR = 0;
+    CGFloat sumG = 0;
+    CGFloat sumB = 0;
+    CGFloat sumW = 0;
+
+    for (size_t y = 0; y < h; y++) {
+        for (size_t x = 0; x < w; x++) {
+            size_t idx = y * bpr + x * bpp;
+            CGFloat r = buf[idx] / 255.0;
+            CGFloat g = buf[idx + 1] / 255.0;
+            CGFloat b = buf[idx + 2] / 255.0;
+            CGFloat a = buf[idx + 3] / 255.0;
+            if (a < 0.15) continue;
+
+            if (hasExcluded) {
+                CGFloat dist = TOColorDistance(r, g, b, er, eg, eb);
+                if (dist < minDistance) continue;
+            }
+
+            CGFloat maxC = MAX(r, MAX(g, b));
+            CGFloat minC = MIN(r, MIN(g, b));
+            CGFloat sat = (maxC <= 0.0001) ? 0.0 : ((maxC - minC) / maxC);
+            CGFloat weight = a * (0.55 + (0.45 * sat));
+
+            sumR += r * weight;
+            sumG += g * weight;
+            sumB += b * weight;
+            sumW += weight;
+        }
+    }
+
+    CGContextRelease(ctx);
+    free(buf);
+    CGImageRelease(cropped);
+
+    if (sumW < 0.01) return nil;
+    return [UIColor colorWithRed:(sumR / sumW) green:(sumG / sumW) blue:(sumB / sumW) alpha:1.0];
+}
+
+- (NSDictionary *)smartStyleForImage:(UIImage *)image
+                             textRect:(CGRect)textRect
+                           textColor:(UIColor *)textColor
+                     backgroundColor:(UIColor *)backgroundColor {
+    if (!image || CGRectIsEmpty(textRect)) return nil;
+
+    CGRect topHalf = CGRectMake(textRect.origin.x,
+                                textRect.origin.y,
+                                textRect.size.width,
+                                MAX(1.0, floor(textRect.size.height * 0.5)));
+    CGRect bottomHalf = CGRectMake(textRect.origin.x,
+                                   CGRectGetMaxY(topHalf),
+                                   textRect.size.width,
+                                   MAX(1.0, textRect.size.height - topHalf.size.height));
+
+    UIColor *textStart = [self detectedTextColorInImage:image rect:topHalf] ?: textColor;
+    UIColor *textEnd = [self detectedTextColorInImage:image rect:bottomHalf] ?: textColor;
+
+    CGRect bgProbe = CGRectInset(textRect, -12.0, -8.0);
+    CGRect bgTop = CGRectMake(bgProbe.origin.x, bgProbe.origin.y, bgProbe.size.width, MAX(1.0, floor(bgProbe.size.height * 0.5)));
+    CGRect bgBottom = CGRectMake(bgProbe.origin.x,
+                                 CGRectGetMaxY(bgTop),
+                                 bgProbe.size.width,
+                                 MAX(1.0, bgProbe.size.height - bgTop.size.height));
+
+    UIColor *bgStart = [self averageColorInImage:image rect:bgTop excludingColor:textColor minDistance:0.12] ?: backgroundColor;
+    UIColor *bgEnd = [self averageColorInImage:image rect:bgBottom excludingColor:textColor minDistance:0.12] ?: backgroundColor;
+
+    UIEdgeInsets insets = UIEdgeInsetsMake(1.0, 2.0, 1.0, 2.0);
+    CGFloat br = 0, bg = 0, bb = 0;
+    if (TOGetRGBComponents(backgroundColor, &br, &bg, &bb)) {
+        CGRect expanded = CGRectInset(textRect, -20.0, -14.0);
+        CGRect safe = CGRectIntersection(expanded, CGRectMake(0, 0, image.size.width, image.size.height));
+        if (!CGRectIsEmpty(safe) && safe.size.width > 2 && safe.size.height > 2) {
+            CGFloat scaleX = (CGFloat)CGImageGetWidth(image.CGImage) / image.size.width;
+            CGFloat scaleY = (CGFloat)CGImageGetHeight(image.CGImage) / image.size.height;
+            CGRect pxRect = CGRectIntegral(CGRectMake(safe.origin.x * scaleX, safe.origin.y * scaleY, safe.size.width * scaleX, safe.size.height * scaleY));
+            CGImageRef cropped = CGImageCreateWithImageInRect(image.CGImage, pxRect);
+            if (cropped) {
+                const size_t w = 56;
+                const size_t h = 56;
+                const size_t bpp = 4;
+                const size_t bpr = w * bpp;
+                uint8_t *buf = (uint8_t *)calloc(h * bpr, sizeof(uint8_t));
+                if (buf) {
+                    CGColorSpaceRef cs = CGColorSpaceCreateDeviceRGB();
+                    CGContextRef ctx = CGBitmapContextCreate(buf, w, h, 8, bpr, cs, kCGImageAlphaPremultipliedLast | kCGBitmapByteOrder32Big);
+                    CGColorSpaceRelease(cs);
+                    if (ctx) {
+                        CGContextSetInterpolationQuality(ctx, kCGInterpolationMedium);
+                        CGContextDrawImage(ctx, CGRectMake(0, 0, w, h), cropped);
+
+                        CGFloat safeW = MAX(CGRectGetWidth(safe), 1.0);
+                        CGFloat safeH = MAX(CGRectGetHeight(safe), 1.0);
+                        NSInteger innerMinX = (NSInteger)floor(((CGRectGetMinX(textRect) - CGRectGetMinX(safe)) / safeW) * (CGFloat)w);
+                        NSInteger innerMaxX = (NSInteger)ceil(((CGRectGetMaxX(textRect) - CGRectGetMinX(safe)) / safeW) * (CGFloat)w);
+                        NSInteger innerMinY = (NSInteger)floor(((CGRectGetMinY(textRect) - CGRectGetMinY(safe)) / safeH) * (CGFloat)h);
+                        NSInteger innerMaxY = (NSInteger)ceil(((CGRectGetMaxY(textRect) - CGRectGetMinY(safe)) / safeH) * (CGFloat)h);
+                        innerMinX = MAX(0, MIN((NSInteger)w - 1, innerMinX));
+                        innerMaxX = MAX(innerMinX + 1, MIN((NSInteger)w, innerMaxX));
+                        innerMinY = MAX(0, MIN((NSInteger)h - 1, innerMinY));
+                        innerMaxY = MAX(innerMinY + 1, MIN((NSInteger)h, innerMaxY));
+
+                        BOOL (^isBgLike)(NSInteger, NSInteger) = ^BOOL(NSInteger x, NSInteger y) {
+                            size_t idx = y * bpr + x * bpp;
+                            CGFloat r = buf[idx] / 255.0;
+                            CGFloat g = buf[idx + 1] / 255.0;
+                            CGFloat b = buf[idx + 2] / 255.0;
+                            CGFloat a = buf[idx + 3] / 255.0;
+                            if (a < 0.12) return NO;
+                            return TOColorDistance(r, g, b, br, bg, bb) <= 0.20;
+                        };
+
+                        NSInteger leftGrow = 0;
+                        for (NSInteger x = innerMinX - 1; x >= 0; x--) {
+                            NSInteger ok = 0;
+                            for (NSInteger y = innerMinY; y < innerMaxY; y++) if (isBgLike(x, y)) ok++;
+                            CGFloat ratio = (CGFloat)ok / (CGFloat)MAX(1, innerMaxY - innerMinY);
+                            if (ratio < 0.50) break;
+                            leftGrow++;
+                        }
+
+                        NSInteger rightGrow = 0;
+                        for (NSInteger x = innerMaxX; x < (NSInteger)w; x++) {
+                            NSInteger ok = 0;
+                            for (NSInteger y = innerMinY; y < innerMaxY; y++) if (isBgLike(x, y)) ok++;
+                            CGFloat ratio = (CGFloat)ok / (CGFloat)MAX(1, innerMaxY - innerMinY);
+                            if (ratio < 0.50) break;
+                            rightGrow++;
+                        }
+
+                        NSInteger topGrow = 0;
+                        for (NSInteger y = innerMinY - 1; y >= 0; y--) {
+                            NSInteger ok = 0;
+                            for (NSInteger x = innerMinX; x < innerMaxX; x++) if (isBgLike(x, y)) ok++;
+                            CGFloat ratio = (CGFloat)ok / (CGFloat)MAX(1, innerMaxX - innerMinX);
+                            if (ratio < 0.50) break;
+                            topGrow++;
+                        }
+
+                        NSInteger bottomGrow = 0;
+                        for (NSInteger y = innerMaxY; y < (NSInteger)h; y++) {
+                            NSInteger ok = 0;
+                            for (NSInteger x = innerMinX; x < innerMaxX; x++) if (isBgLike(x, y)) ok++;
+                            CGFloat ratio = (CGFloat)ok / (CGFloat)MAX(1, innerMaxX - innerMinX);
+                            if (ratio < 0.50) break;
+                            bottomGrow++;
+                        }
+
+                        CGFloat toImageX = safe.size.width / (CGFloat)w;
+                        CGFloat toImageY = safe.size.height / (CGFloat)h;
+                        insets = UIEdgeInsetsMake(MIN(16.0, MAX(1.0, topGrow * toImageY)),
+                                                  MIN(24.0, MAX(1.0, leftGrow * toImageX)),
+                                                  MIN(16.0, MAX(1.0, bottomGrow * toImageY)),
+                                                  MIN(24.0, MAX(1.0, rightGrow * toImageX)));
+
+                        CGContextRelease(ctx);
+                    }
+                    free(buf);
+                }
+                CGImageRelease(cropped);
+            }
+        }
+    }
+
+    return @{
+        @"textStart": textStart ?: textColor ?: UIColor.whiteColor,
+        @"textEnd": textEnd ?: textColor ?: UIColor.whiteColor,
+        @"bgStart": bgStart ?: backgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0],
+        @"bgEnd": bgEnd ?: backgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0],
+        @"bgInsets": [NSValue valueWithUIEdgeInsets:insets],
+        @"bgCornerRadius": @(3.0)
+    };
+}
+
 static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(void) {
     static NSArray<NSDictionary<NSString *, NSString *> *> *langs;
     static dispatch_once_t onceToken;
@@ -2028,6 +2350,12 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
             last[@"rect"] = [NSValue valueWithCGRect:CGRectUnion(lr, cr)];
             if (!last[@"detectedColor"] && current[@"detectedColor"]) last[@"detectedColor"] = current[@"detectedColor"];
             if (!last[@"detectedBackgroundColor"] && current[@"detectedBackgroundColor"]) last[@"detectedBackgroundColor"] = current[@"detectedBackgroundColor"];
+            if (!last[@"detectedColorStart"] && current[@"detectedColorStart"]) last[@"detectedColorStart"] = current[@"detectedColorStart"];
+            if (!last[@"detectedColorEnd"] && current[@"detectedColorEnd"]) last[@"detectedColorEnd"] = current[@"detectedColorEnd"];
+            if (!last[@"detectedBackgroundColorStart"] && current[@"detectedBackgroundColorStart"]) last[@"detectedBackgroundColorStart"] = current[@"detectedBackgroundColorStart"];
+            if (!last[@"detectedBackgroundColorEnd"] && current[@"detectedBackgroundColorEnd"]) last[@"detectedBackgroundColorEnd"] = current[@"detectedBackgroundColorEnd"];
+            if (!last[@"detectedBackgroundInsets"] && current[@"detectedBackgroundInsets"]) last[@"detectedBackgroundInsets"] = current[@"detectedBackgroundInsets"];
+            if (!last[@"detectedBackgroundCornerRadius"] && current[@"detectedBackgroundCornerRadius"]) last[@"detectedBackgroundCornerRadius"] = current[@"detectedBackgroundCornerRadius"];
         } else {
             [blocks addObject:current];
         }
@@ -2057,12 +2385,34 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                     CGRect rect = [self imageRectForNormalizedVisionRect:obs.boundingBox imageSize:image.size];
                     UIColor *autoColor = [self detectedTextColorInImage:image rect:rect];
                     UIColor *autoBackgroundColor = [self detectedBackgroundColorInImage:image rect:rect textColor:autoColor];
-                    [items addObject:@{
+                    NSMutableDictionary *item = [@{
                         @"source": top.string,
                         @"rect": [NSValue valueWithCGRect:rect],
                         @"detectedColor": autoColor ?: UIColor.whiteColor,
                         @"detectedBackgroundColor": autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0]
-                    }];
+                    } mutableCopy];
+
+                    TOTranslationManager *styleSettings = [TOTranslationManager shared];
+                    if (styleSettings.smartCompatibilityEnabled) {
+                        NSDictionary *smartStyle = [self smartStyleForImage:image textRect:rect textColor:(autoColor ?: UIColor.whiteColor) backgroundColor:(autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0])];
+                        if ([smartStyle isKindOfClass:[NSDictionary class]]) {
+                            id textStart = smartStyle[@"textStart"];
+                            id textEnd = smartStyle[@"textEnd"];
+                            id bgStart = smartStyle[@"bgStart"];
+                            id bgEnd = smartStyle[@"bgEnd"];
+                            id bgInsets = smartStyle[@"bgInsets"];
+                            id bgCornerRadius = smartStyle[@"bgCornerRadius"];
+
+                            if ([textStart isKindOfClass:[UIColor class]]) item[@"detectedColorStart"] = textStart;
+                            if ([textEnd isKindOfClass:[UIColor class]]) item[@"detectedColorEnd"] = textEnd;
+                            if ([bgStart isKindOfClass:[UIColor class]]) item[@"detectedBackgroundColorStart"] = bgStart;
+                            if ([bgEnd isKindOfClass:[UIColor class]]) item[@"detectedBackgroundColorEnd"] = bgEnd;
+                            if ([bgInsets isKindOfClass:[NSValue class]]) item[@"detectedBackgroundInsets"] = bgInsets;
+                            if ([bgCornerRadius isKindOfClass:[NSNumber class]]) item[@"detectedBackgroundCornerRadius"] = bgCornerRadius;
+                        }
+                    }
+
+                    [items addObject:item];
                 }
             }
 
@@ -2141,12 +2491,34 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                         CGRect rect = [self imageRectForNormalizedVisionRect:obs.boundingBox imageSize:image.size];
                         UIColor *autoColor = [self detectedTextColorInImage:image rect:rect];
                         UIColor *autoBackgroundColor = [self detectedBackgroundColorInImage:image rect:rect textColor:autoColor];
-                        [items addObject:@{
+                        NSMutableDictionary *item = [@{
                             @"source": top.string,
                             @"rect": [NSValue valueWithCGRect:rect],
                             @"detectedColor": autoColor ?: UIColor.whiteColor,
                             @"detectedBackgroundColor": autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0]
-                        }];
+                        } mutableCopy];
+
+                        TOTranslationManager *styleSettings = [TOTranslationManager shared];
+                        if (styleSettings.smartCompatibilityEnabled) {
+                            NSDictionary *smartStyle = [self smartStyleForImage:image textRect:rect textColor:(autoColor ?: UIColor.whiteColor) backgroundColor:(autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0])];
+                            if ([smartStyle isKindOfClass:[NSDictionary class]]) {
+                                id textStart = smartStyle[@"textStart"];
+                                id textEnd = smartStyle[@"textEnd"];
+                                id bgStart = smartStyle[@"bgStart"];
+                                id bgEnd = smartStyle[@"bgEnd"];
+                                id bgInsets = smartStyle[@"bgInsets"];
+                                id bgCornerRadius = smartStyle[@"bgCornerRadius"];
+
+                                if ([textStart isKindOfClass:[UIColor class]]) item[@"detectedColorStart"] = textStart;
+                                if ([textEnd isKindOfClass:[UIColor class]]) item[@"detectedColorEnd"] = textEnd;
+                                if ([bgStart isKindOfClass:[UIColor class]]) item[@"detectedBackgroundColorStart"] = bgStart;
+                                if ([bgEnd isKindOfClass:[UIColor class]]) item[@"detectedBackgroundColorEnd"] = bgEnd;
+                                if ([bgInsets isKindOfClass:[NSValue class]]) item[@"detectedBackgroundInsets"] = bgInsets;
+                                if ([bgCornerRadius isKindOfClass:[NSNumber class]]) item[@"detectedBackgroundCornerRadius"] = bgCornerRadius;
+                            }
+                        }
+
+                        [items addObject:item];
                     }
                 }
             }
@@ -2968,6 +3340,19 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TOUIString(@"إعدادات مظهر الترجمة")
                                                                    message:TOUIString(@"تخصيص لون النص والخلفية")
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
+
+    TOTranslationManager *appearanceManager = TOTranslationManager.shared;
+    NSString *smartTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"التوافق الذكي"), (appearanceManager.smartCompatibilityEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))];
+    [sheet addAction:[UIAlertAction actionWithTitle:smartTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        TOTranslationManager *inner = TOTranslationManager.shared;
+        inner.smartCompatibilityEnabled = !inner.smartCompatibilityEnabled;
+        [inner saveSettings];
+        [self showToast:TOUIString(inner.smartCompatibilityEnabled ? @"تم تفعيل التوافق الذكي" : @"تم تعطيل التوافق الذكي")];
+
+        if (inner.translationTapMode == TOTranslationTapModeLive && self.liveTranslateEnabled) {
+            [self requestLiveOCROverlayRefresh];
+        }
+    }]];
 
     [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", TOUIString(@"إعدادات لون النص")] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
         UIViewController *menuTop = TOTopViewController();
