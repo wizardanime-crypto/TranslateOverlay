@@ -89,6 +89,41 @@ static NSString *TOCollapseWhitespace(NSString *text) {
     return [words componentsJoinedByString:@" "];
 }
 
+static NSString *TONormalizeReplacementToken(NSString *text) {
+    if (![text isKindOfClass:[NSString class]]) return @"";
+    NSString *trimmed = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (trimmed.length == 0) return @"";
+    return TOCollapseWhitespace(trimmed);
+}
+
+static NSDictionary<NSString *, NSString *> *TOParsedReplacementMapFromMultilineText(NSString *editedText) {
+    NSArray<NSString *> *rows = [editedText componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet];
+    NSMutableDictionary<NSString *, NSString *> *newMap = [NSMutableDictionary dictionary];
+
+    for (NSString *row in rows) {
+        NSString *line = TONormalizeReplacementToken(row);
+        if (line.length == 0) continue;
+
+        NSRange sep = [line rangeOfString:@" - "];
+        if (sep.location == NSNotFound) sep = [line rangeOfString:@" – "];
+        if (sep.location == NSNotFound) sep = [line rangeOfString:@" — "];
+        if (sep.location == NSNotFound) sep = [line rangeOfString:@" => "];
+        if (sep.location == NSNotFound) sep = [line rangeOfString:@" -> "];
+        if (sep.location == NSNotFound) sep = [line rangeOfString:@" = "];
+        if (sep.location == NSNotFound) sep = [line rangeOfString:@":"];
+        if (sep.location == NSNotFound) sep = [line rangeOfString:@"-"];
+        if (sep.location == NSNotFound) continue;
+
+        NSString *from = TONormalizeReplacementToken([line substringToIndex:sep.location]);
+        NSString *to = TONormalizeReplacementToken([line substringFromIndex:(sep.location + sep.length)]);
+        if (from.length == 0 || to.length == 0) continue;
+        if ([from isEqualToString:to]) continue;
+        newMap[from] = to;
+    }
+
+    return [newMap copy] ?: @{};
+}
+
 static NSString *TOPrepareLiveOCRSourceText(NSString *text) {
     if (text.length == 0) return @"";
 
@@ -454,6 +489,10 @@ static UIColor *TOReadableTextFallbackForBackground(UIColor *backgroundColor) {
 - (void)translateOCRText:(NSString *)text completion:(void (^)(NSString *translated))completion;
 - (void)applyLiveCorrectionsFromItems:(NSArray<NSDictionary *> *)items;
 - (NSString *)applyReplacementWordsToText:(NSString *)text;
+- (NSDictionary<NSString *, NSString *> *)replacementWordsSnapshot;
+- (BOOL)upsertReplacementWordFrom:(NSString *)from to:(NSString *)to;
+- (BOOL)removeReplacementWordForKey:(NSString *)from;
+- (void)replaceAllReplacementWordsWithMap:(NSDictionary<NSString *, NSString *> *)map;
 @end
 
 @implementation TOTranslationManager
@@ -496,18 +535,15 @@ static UIColor *TOReadableTextFallbackForBackground(UIColor *backgroundColor) {
     self.replacementWordsEnabled = replacementEnabled ? [replacementEnabled boolValue] : NO;
 
     NSDictionary *storedReplacementMap = [d dictionaryForKey:kTOReplacementWordsMapKey];
+    @synchronized (self) {
+        [self.replacementWordsMap removeAllObjects];
+    }
     if ([storedReplacementMap isKindOfClass:[NSDictionary class]]) {
-        @synchronized (self) {
-            [self.replacementWordsMap removeAllObjects];
-            for (id key in storedReplacementMap) {
-                if (![key isKindOfClass:[NSString class]]) continue;
-                id value = storedReplacementMap[key];
-                if (![value isKindOfClass:[NSString class]]) continue;
-                NSString *from = [(NSString *)key stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-                NSString *to = [(NSString *)value stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-                if (from.length == 0 || to.length == 0) continue;
-                self.replacementWordsMap[from] = to;
-            }
+        for (id key in storedReplacementMap) {
+            if (![key isKindOfClass:[NSString class]]) continue;
+            id value = storedReplacementMap[key];
+            if (![value isKindOfClass:[NSString class]]) continue;
+            [self upsertReplacementWordFrom:(NSString *)key to:(NSString *)value];
         }
     }
 
@@ -911,6 +947,75 @@ static UIColor *TOReadableTextFallbackForBackground(UIColor *backgroundColor) {
         result = [result stringByReplacingOccurrencesOfString:from withString:to];
     }
     return result;
+}
+
+- (NSDictionary<NSString *, NSString *> *)replacementWordsSnapshot {
+    NSDictionary<NSString *, NSString *> *snapshot = nil;
+    @synchronized (self) {
+        snapshot = [self.replacementWordsMap copy] ?: @{};
+    }
+    return snapshot;
+}
+
+- (BOOL)upsertReplacementWordFrom:(NSString *)from to:(NSString *)to {
+    NSString *normalizedFrom = TONormalizeReplacementToken(from);
+    NSString *normalizedTo = TONormalizeReplacementToken(to);
+    if (normalizedFrom.length == 0 || normalizedTo.length == 0) return NO;
+    if ([normalizedFrom isEqualToString:normalizedTo]) return NO;
+
+    BOOL changed = NO;
+    @synchronized (self) {
+        NSString *existing = self.replacementWordsMap[normalizedFrom];
+        if (![existing isEqualToString:normalizedTo]) {
+            self.replacementWordsMap[normalizedFrom] = normalizedTo;
+            [self.persistentCache removeAllObjects];
+            changed = YES;
+        }
+    }
+    if (changed) {
+        [self.cache removeAllObjects];
+    }
+    return changed;
+}
+
+- (BOOL)removeReplacementWordForKey:(NSString *)from {
+    NSString *normalizedFrom = TONormalizeReplacementToken(from);
+    if (normalizedFrom.length == 0) return NO;
+
+    BOOL changed = NO;
+    @synchronized (self) {
+        if (self.replacementWordsMap[normalizedFrom] != nil) {
+            [self.replacementWordsMap removeObjectForKey:normalizedFrom];
+            [self.persistentCache removeAllObjects];
+            changed = YES;
+        }
+    }
+    if (changed) {
+        [self.cache removeAllObjects];
+    }
+    return changed;
+}
+
+- (void)replaceAllReplacementWordsWithMap:(NSDictionary<NSString *, NSString *> *)map {
+    NSMutableDictionary<NSString *, NSString *> *normalized = [NSMutableDictionary dictionary];
+    for (id key in map) {
+        if (![key isKindOfClass:[NSString class]]) continue;
+        id value = map[key];
+        if (![value isKindOfClass:[NSString class]]) continue;
+
+        NSString *from = TONormalizeReplacementToken((NSString *)key);
+        NSString *to = TONormalizeReplacementToken((NSString *)value);
+        if (from.length == 0 || to.length == 0) continue;
+        if ([from isEqualToString:to]) continue;
+        normalized[from] = to;
+    }
+
+    @synchronized (self) {
+        [self.replacementWordsMap removeAllObjects];
+        [self.replacementWordsMap addEntriesFromDictionary:normalized];
+        [self.persistentCache removeAllObjects];
+    }
+    [self.cache removeAllObjects];
 }
 
 @end
@@ -3617,15 +3722,12 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [alert addAction:[UIAlertAction actionWithTitle:TOUIString(@"حفظ") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *saveAction) {
             UITextField *fromField = (alert.textFields.count > 0) ? alert.textFields[0] : nil;
             UITextField *toField = (alert.textFields.count > 1) ? alert.textFields[1] : nil;
-            NSString *from = [fromField.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-            NSString *to = [toField.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-            if (from.length == 0 || to.length == 0) return;
-
-            @synchronized (m) {
-                m.replacementWordsMap[from] = to;
-                [m.persistentCache removeAllObjects];
+            BOOL changed = [m upsertReplacementWordFrom:fromField.text to:toField.text];
+            if (!changed) {
+                [self showToast:TOUIString(@"تعذر الحفظ: تحقق من القيم")];
+                return;
             }
-            [m.cache removeAllObjects];
+
             [m saveSettings];
             [self showToast:TOUIString(@"تم حفظ الكلمات البديله")];
         }]];
@@ -3638,50 +3740,20 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         editor.modalPresentationStyle = UIModalPresentationFullScreen;
         editor.disableAutoUITranslation = YES;
 
-        NSArray<NSString *> *keys = @[];
-        @synchronized (m) {
-            keys = [[m.replacementWordsMap allKeys] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
-        }
+        NSDictionary<NSString *, NSString *> *snapshot = [m replacementWordsSnapshot];
+        NSArray<NSString *> *keys = [[snapshot allKeys] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
 
         NSMutableArray<NSString *> *lines = [NSMutableArray arrayWithCapacity:keys.count];
         for (NSString *from in keys) {
-            NSString *to = nil;
-            @synchronized (m) {
-                to = m.replacementWordsMap[from];
-            }
+            NSString *to = snapshot[from];
             if (to.length == 0) continue;
             [lines addObject:[NSString stringWithFormat:@"%@ - %@", from, to]];
         }
         editor.initialText = [lines componentsJoinedByString:@"\n"];
 
         editor.onSave = ^(NSString *editedText) {
-            NSArray<NSString *> *rows = [editedText componentsSeparatedByCharactersInSet:NSCharacterSet.newlineCharacterSet];
-            NSMutableDictionary<NSString *, NSString *> *newMap = [NSMutableDictionary dictionary];
-
-            for (NSString *row in rows) {
-                NSString *line = [row stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-                if (line.length == 0) continue;
-
-                NSRange sep = [line rangeOfString:@" - "];
-                if (sep.location == NSNotFound) sep = [line rangeOfString:@" – "];
-                if (sep.location == NSNotFound) sep = [line rangeOfString:@" — "];
-                if (sep.location == NSNotFound) {
-                    sep = [line rangeOfString:@"-"];
-                }
-                if (sep.location == NSNotFound) continue;
-
-                NSString *from = [[line substringToIndex:sep.location] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-                NSString *to = [[line substringFromIndex:(sep.location + sep.length)] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-                if (from.length == 0 || to.length == 0) continue;
-                newMap[from] = to;
-            }
-
-            @synchronized (m) {
-                [m.replacementWordsMap removeAllObjects];
-                [m.replacementWordsMap addEntriesFromDictionary:newMap];
-                [m.persistentCache removeAllObjects];
-            }
-            [m.cache removeAllObjects];
+            NSDictionary<NSString *, NSString *> *newMap = TOParsedReplacementMapFromMultilineText(editedText ?: @"");
+            [m replaceAllReplacementWordsWithMap:newMap];
             [m saveSettings];
             [self showToast:[NSString stringWithFormat:@"%@: %d", TOUIString(@"عدد الكلمات البديله"), (int)newMap.count]];
         };
@@ -3705,10 +3777,8 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     if (!top) return;
 
     TOTranslationManager *m = [TOTranslationManager shared];
-    NSArray<NSString *> *keys = @[];
-    @synchronized (m) {
-        keys = [[m.replacementWordsMap allKeys] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
-    }
+    NSDictionary<NSString *, NSString *> *snapshot = [m replacementWordsSnapshot];
+    NSArray<NSString *> *keys = [[snapshot allKeys] sortedArrayUsingSelector:@selector(localizedCaseInsensitiveCompare:)];
 
     if (keys.count == 0) {
         [self showToast:TOUIString(@"لا توجد كلمات بديله")];
@@ -3721,31 +3791,71 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     objc_setAssociatedObject(sheet, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
     for (NSString *from in keys) {
-        NSString *to = nil;
-        @synchronized (m) {
-            to = m.replacementWordsMap[from];
-        }
+        NSString *to = snapshot[from];
         if (to.length == 0) continue;
 
         NSString *title = [NSString stringWithFormat:@"%@ → %@", from, to];
-        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *a) {
-            UIAlertController *confirm = [UIAlertController alertControllerWithTitle:TOUIString(@"تأكيد الحذف")
-                                                                              message:TOUIString(@"هل أنت متأكد من حذف هذه الكلمة؟")
-                                                                       preferredStyle:UIAlertControllerStyleAlert];
-            [confirm addAction:[UIAlertAction actionWithTitle:TOUIString(@"لا") style:UIAlertActionStyleCancel handler:nil]];
-            [confirm addAction:[UIAlertAction actionWithTitle:TOUIString(@"نعم") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *confirmAction) {
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
+            UIAlertController *editAlert = [UIAlertController alertControllerWithTitle:TOUIString(@"تحرير الكلمات البديله")
+                                                                                message:nil
+                                                                         preferredStyle:UIAlertControllerStyleAlert];
+            objc_setAssociatedObject(editAlert, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [editAlert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+                field.placeholder = TOUIString(@"الكلمة الأصلية");
+                field.text = from;
+                objc_setAssociatedObject(field, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }];
+            [editAlert addTextFieldWithConfigurationHandler:^(UITextField *field) {
+                field.placeholder = TOUIString(@"الكلمة البديلة");
+                field.text = to;
+                objc_setAssociatedObject(field, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            }];
+
+            [editAlert addAction:[UIAlertAction actionWithTitle:TOUIString(@"إلغاء") style:UIAlertActionStyleCancel handler:nil]];
+            [editAlert addAction:[UIAlertAction actionWithTitle:TOUIString(@"حفظ") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *saveAction) {
+                UITextField *fromField = (editAlert.textFields.count > 0) ? editAlert.textFields[0] : nil;
+                UITextField *toField = (editAlert.textFields.count > 1) ? editAlert.textFields[1] : nil;
+
+                BOOL changed = NO;
                 @synchronized (m) {
-                    [m.replacementWordsMap removeObjectForKey:from];
-                    [m.persistentCache removeAllObjects];
+                    [m removeReplacementWordForKey:from];
+                    changed = [m upsertReplacementWordFrom:fromField.text to:toField.text];
+                    if (!changed) {
+                        [m upsertReplacementWordFrom:from to:to];
+                    }
                 }
-                [m.cache removeAllObjects];
+
+                if (!changed) {
+                    [self showToast:TOUIString(@"تعذر الحفظ: تحقق من القيم")];
+                    return;
+                }
+
                 [m saveSettings];
-                [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"تم حذف الكلمة البديله"), from]];
+                [self showToast:TOUIString(@"تم حفظ الكلمات البديله")];
                 [self showReplacementWordsEditor];
             }]];
 
-            [top presentViewController:confirm animated:YES completion:^{
-                TOTranslateControllerTree(confirm);
+            [editAlert addAction:[UIAlertAction actionWithTitle:TOUIString(@"حذف") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *deleteAction) {
+                UIAlertController *confirm = [UIAlertController alertControllerWithTitle:TOUIString(@"تأكيد الحذف")
+                                                                                  message:TOUIString(@"هل أنت متأكد من حذف هذه الكلمة؟")
+                                                                           preferredStyle:UIAlertControllerStyleAlert];
+                [confirm addAction:[UIAlertAction actionWithTitle:TOUIString(@"لا") style:UIAlertActionStyleCancel handler:nil]];
+                [confirm addAction:[UIAlertAction actionWithTitle:TOUIString(@"نعم") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *confirmAction) {
+                    BOOL removed = [m removeReplacementWordForKey:from];
+                    if (removed) {
+                        [m saveSettings];
+                        [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"تم حذف الكلمة البديله"), from]];
+                    }
+                    [self showReplacementWordsEditor];
+                }]];
+
+                [top presentViewController:confirm animated:YES completion:^{
+                    TOTranslateControllerTree(confirm);
+                }];
+            }]];
+
+            [top presentViewController:editAlert animated:YES completion:^{
+                TOTranslateControllerTree(editAlert);
             }];
         }]];
     }
@@ -3756,11 +3866,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                                                                    preferredStyle:UIAlertControllerStyleAlert];
         [confirm addAction:[UIAlertAction actionWithTitle:TOUIString(@"إلغاء") style:UIAlertActionStyleCancel handler:nil]];
         [confirm addAction:[UIAlertAction actionWithTitle:TOUIString(@"حذف") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *confirmAction) {
-            @synchronized (m) {
-                [m.replacementWordsMap removeAllObjects];
-                [m.persistentCache removeAllObjects];
-            }
-            [m.cache removeAllObjects];
+            [m replaceAllReplacementWordsWithMap:@{}];
             [m saveSettings];
             [self showToast:TOUIString(@"تم حذف جميع الكلمات البديله")];
         }]];
