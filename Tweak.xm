@@ -824,11 +824,11 @@ static UIColor *TOReadableTextFallbackForBackground(UIColor *backgroundColor) {
             if (processed.length > 0) finalResult = processed;
         }
 
-        // Cache only validated translation payloads; avoid poisoning cache with original text on network/parse failures.
-        if (didGetValidTranslationPayload && finalResult.length > 0) {
-            [self.cache setObject:finalResult forKey:cacheKey];
+        // Cache raw translated text only; replacement words are applied dynamically at display time.
+        if (didGetValidTranslationPayload && result.length > 0) {
+            [self.cache setObject:result forKey:cacheKey];
             @synchronized (self) {
-                self.persistentCache[cacheKey] = finalResult;
+                self.persistentCache[cacheKey] = result;
                 if (self.persistentCache.count > 500) {
                     NSString *first = self.persistentCache.allKeys.firstObject;
                     if (first) [self.persistentCache removeObjectForKey:first];
@@ -3701,6 +3701,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     [sheet addAction:[UIAlertAction actionWithTitle:stateTitle style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
         m.replacementWordsEnabled = !m.replacementWordsEnabled;
         [m saveSettings];
+        TOForceImmediateUILocalizationRefresh();
         [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"الكلمات البديله"), (m.replacementWordsEnabled ? TOUIString(@"مفعل") : TOUIString(@"معطل"))]];
     }]];
 
@@ -3729,6 +3730,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             }
 
             [m saveSettings];
+            TOForceImmediateUILocalizationRefresh();
             [self showToast:TOUIString(@"تم حفظ الكلمات البديله")];
         }]];
 
@@ -3755,6 +3757,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             NSDictionary<NSString *, NSString *> *newMap = TOParsedReplacementMapFromMultilineText(editedText ?: @"");
             [m replaceAllReplacementWordsWithMap:newMap];
             [m saveSettings];
+            TOForceImmediateUILocalizationRefresh();
             [self showToast:[NSString stringWithFormat:@"%@: %d", TOUIString(@"عدد الكلمات البديله"), (int)newMap.count]];
         };
 
@@ -3831,6 +3834,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                 }
 
                 [m saveSettings];
+                TOForceImmediateUILocalizationRefresh();
                 [self showToast:TOUIString(@"تم حفظ الكلمات البديله")];
                 [self showReplacementWordsEditor];
             }]];
@@ -3844,6 +3848,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                     BOOL removed = [m removeReplacementWordForKey:from];
                     if (removed) {
                         [m saveSettings];
+                        TOForceImmediateUILocalizationRefresh();
                         [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"تم حذف الكلمة البديله"), from]];
                     }
                     [self showReplacementWordsEditor];
@@ -3868,6 +3873,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [confirm addAction:[UIAlertAction actionWithTitle:TOUIString(@"حذف") style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *confirmAction) {
             [m replaceAllReplacementWordsWithMap:@{}];
             [m saveSettings];
+            TOForceImmediateUILocalizationRefresh();
             [self showToast:TOUIString(@"تم حذف جميع الكلمات البديله")];
         }]];
 
