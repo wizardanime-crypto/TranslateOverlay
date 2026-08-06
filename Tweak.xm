@@ -408,6 +408,14 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     return sqrt((dr * dr) + (dg * dg) + (db * db));
 }
 
+static UIColor *TOReadableTextFallbackForBackground(UIColor *backgroundColor) {
+    CGFloat br = 0, bg = 0, bb = 0;
+    if (!TOGetRGBComponents(backgroundColor, &br, &bg, &bb)) return UIColor.whiteColor;
+
+    CGFloat luminance = (0.2126 * br) + (0.7152 * bg) + (0.0722 * bb);
+    return (luminance >= 0.56) ? UIColor.blackColor : UIColor.whiteColor;
+}
+
 @interface TOTranslationManager : NSObject
 @property (nonatomic, copy) NSString *sourceLanguage;
 @property (nonatomic, copy) NSString *targetLanguage;
@@ -2057,6 +2065,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                     CGRect rect = [self imageRectForNormalizedVisionRect:obs.boundingBox imageSize:image.size];
                     UIColor *autoColor = [self detectedTextColorInImage:image rect:rect];
                     UIColor *autoBackgroundColor = [self detectedBackgroundColorInImage:image rect:rect textColor:autoColor];
+                    TOTranslationManager *settings = [TOTranslationManager shared];
+                    if (!autoColor && settings.ocrAutoColorEnabled && settings.ocrBackgroundAutoColorEnabled) {
+                        autoColor = TOReadableTextFallbackForBackground(autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0]);
+                    }
                     [items addObject:@{
                         @"source": top.string,
                         @"rect": [NSValue valueWithCGRect:rect],
@@ -2141,6 +2153,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                         CGRect rect = [self imageRectForNormalizedVisionRect:obs.boundingBox imageSize:image.size];
                         UIColor *autoColor = [self detectedTextColorInImage:image rect:rect];
                         UIColor *autoBackgroundColor = [self detectedBackgroundColorInImage:image rect:rect textColor:autoColor];
+                        TOTranslationManager *settings = [TOTranslationManager shared];
+                        if (!autoColor && settings.ocrAutoColorEnabled && settings.ocrBackgroundAutoColorEnabled) {
+                            autoColor = TOReadableTextFallbackForBackground(autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0]);
+                        }
                         [items addObject:@{
                             @"source": top.string,
                             @"rect": [NSValue valueWithCGRect:rect],
