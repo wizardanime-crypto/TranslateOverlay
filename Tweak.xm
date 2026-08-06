@@ -1356,6 +1356,21 @@ static void TODrawVerticalGradient(CGContextRef ctx, CGRect rect, UIColor *start
     CGGradientRelease(gradient);
 }
 
+static CGFloat TOLuminanceForColor(UIColor *color) {
+    if (!color) return 0.5;
+    CGFloat r = 0, g = 0, b = 0;
+    if (!TOGetRGBComponents(color, &r, &g, &b)) return 0.5;
+    return (0.2126 * r) + (0.7152 * g) + (0.0722 * b);
+}
+
+static CGFloat TOContrastRatio(UIColor *a, UIColor *b) {
+    CGFloat la = TOLuminanceForColor(a);
+    CGFloat lb = TOLuminanceForColor(b);
+    CGFloat high = MAX(la, lb);
+    CGFloat low = MIN(la, lb);
+    return (high + 0.05) / (low + 0.05);
+}
+
 static BOOL TODrawGradientText(NSString *text,
                                          CGRect drawRect,
                                          NSDictionary *attrs,
@@ -1376,13 +1391,23 @@ static BOOL TODrawGradientText(NSString *text,
     UIGraphicsEndImageContext();
     if (!maskImage.CGImage) return NO;
 
-    CGContextRef ctx = UIGraphicsGetCurrentContext();
-    if (!ctx) return NO;
+    UIGraphicsBeginImageContextWithOptions(maskSize, NO, 0);
+    CGContextRef gradientCtx = UIGraphicsGetCurrentContext();
+    if (!gradientCtx) {
+        UIGraphicsEndImageContext();
+        return NO;
+    }
 
-    CGContextSaveGState(ctx);
-    CGContextClipToMask(ctx, drawRect, maskImage.CGImage);
-    TODrawVerticalGradient(ctx, drawRect, startColor, endColor, nil);
-    CGContextRestoreGState(ctx);
+    CGContextSaveGState(gradientCtx);
+    CGContextClipToMask(gradientCtx, localRect, maskImage.CGImage);
+    TODrawVerticalGradient(gradientCtx, localRect, startColor, endColor, nil);
+    CGContextRestoreGState(gradientCtx);
+
+    UIImage *gradientTextImage = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    if (!gradientTextImage) return NO;
+
+    [gradientTextImage drawInRect:drawRect];
     return YES;
 }
 
@@ -2200,13 +2225,6 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
                                    textRect.size.width,
                                    MAX(1.0, textRect.size.height - topHalf.size.height));
 
-    UIColor *textStart = textColor;
-    UIColor *textEnd = textColor;
-    if (needsText) {
-        textStart = [self smartTextColorInImage:image rect:topHalf backgroundHint:backgroundColor] ?: [self detectedTextColorInImage:image rect:topHalf] ?: textColor;
-        textEnd = [self smartTextColorInImage:image rect:bottomHalf backgroundHint:backgroundColor] ?: [self detectedTextColorInImage:image rect:bottomHalf] ?: textColor;
-    }
-
     CGRect bgProbe = CGRectInset(textRect, -12.0, -8.0);
     CGRect bgTop = CGRectMake(bgProbe.origin.x, bgProbe.origin.y, bgProbe.size.width, MAX(1.0, floor(bgProbe.size.height * 0.5)));
     CGRect bgBottom = CGRectMake(bgProbe.origin.x,
@@ -2221,7 +2239,55 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         bgEnd = [self detectedBackgroundColorInImage:image rect:bgBottom textColor:textColor] ?: [self averageColorInImage:image rect:bgBottom excludingColor:textColor minDistance:0.12] ?: backgroundColor;
     }
 
+    UIColor *textStart = textColor;
+    UIColor *textEnd = textColor;
+    if (needsText) {
+        UIColor *topBgHint = bgStart ?: backgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0];
+        UIColor *bottomBgHint = bgEnd ?: backgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0];
+
+        UIColor *topSmart = [self smartTextColorInImage:image rect:topHalf backgroundHint:topBgHint];
+        UIColor *topClassic = [self detectedTextColorInImage:image rect:topHalf];
+        UIColor *bottomSmart = [self smartTextColorInImage:image rect:bottomHalf backgroundHint:bottomBgHint];
+        UIColor *bottomClassic = [self detectedTextColorInImage:image rect:bottomHalf];
+
+        UIColor *topChosen = topSmart ?: topClassic ?: textColor ?: UIColor.whiteColor;
+        UIColor *bottomChosen = bottomSmart ?: bottomClassic ?: textColor ?: UIColor.whiteColor;
+
+        if (topSmart && topClassic) {
+            CGFloat smartContrast = TOContrastRatio(topSmart, topBgHint);
+            CGFloat classicContrast = TOContrastRatio(topClassic, topBgHint);
+            topChosen = (classicContrast > smartContrast + 0.08) ? topClassic : topSmart;
+        }
+        if (bottomSmart && bottomClassic) {
+            CGFloat smartContrast = TOContrastRatio(bottomSmart, bottomBgHint);
+            CGFloat classicContrast = TOContrastRatio(bottomClassic, bottomBgHint);
+            bottomChosen = (classicContrast > smartContrast + 0.08) ? bottomClassic : bottomSmart;
+        }
+
+        CGFloat topChosenContrast = TOContrastRatio(topChosen, topBgHint);
+        CGFloat topBlackContrast = TOContrastRatio(UIColor.blackColor, topBgHint);
+        CGFloat topWhiteContrast = TOContrastRatio(UIColor.whiteColor, topBgHint);
+        if (topBlackContrast > topChosenContrast + 0.35 && topBlackContrast >= 2.15) {
+            topChosen = UIColor.blackColor;
+        } else if (topWhiteContrast > topChosenContrast + 0.35 && topWhiteContrast >= 2.15) {
+            topChosen = UIColor.whiteColor;
+        }
+
+        CGFloat bottomChosenContrast = TOContrastRatio(bottomChosen, bottomBgHint);
+        CGFloat bottomBlackContrast = TOContrastRatio(UIColor.blackColor, bottomBgHint);
+        CGFloat bottomWhiteContrast = TOContrastRatio(UIColor.whiteColor, bottomBgHint);
+        if (bottomBlackContrast > bottomChosenContrast + 0.35 && bottomBlackContrast >= 2.15) {
+            bottomChosen = UIColor.blackColor;
+        } else if (bottomWhiteContrast > bottomChosenContrast + 0.35 && bottomWhiteContrast >= 2.15) {
+            bottomChosen = UIColor.whiteColor;
+        }
+
+        textStart = topChosen;
+        textEnd = bottomChosen;
+    }
+
     UIEdgeInsets insets = UIEdgeInsetsMake(1.0, 2.0, 1.0, 2.0);
+    CGFloat smartCornerRadius = 3.0;
     CGFloat br = 0, bg = 0, bb = 0;
     if (needsBackground && TOGetRGBComponents(backgroundColor, &br, &bg, &bb)) {
         CGRect expanded = CGRectInset(textRect, -20.0, -14.0);
@@ -2304,10 +2370,57 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 
                         CGFloat toImageX = safe.size.width / (CGFloat)w;
                         CGFloat toImageY = safe.size.height / (CGFloat)h;
-                        insets = UIEdgeInsetsMake(MIN(16.0, MAX(1.0, topGrow * toImageY)),
-                                                  MIN(24.0, MAX(1.0, leftGrow * toImageX)),
-                                                  MIN(16.0, MAX(1.0, bottomGrow * toImageY)),
-                                                  MIN(24.0, MAX(1.0, rightGrow * toImageX)));
+
+                        CGFloat leftInset = MAX(0.8, leftGrow * toImageX);
+                        CGFloat rightInset = MAX(0.8, rightGrow * toImageX);
+                        CGFloat topInset = MAX(0.8, topGrow * toImageY);
+                        CGFloat bottomInset = MAX(0.8, bottomGrow * toImageY);
+
+                        if (leftInset > (rightInset * 2.6) && leftInset > 4.0) leftInset = (rightInset * 2.0) + 1.0;
+                        if (rightInset > (leftInset * 2.6) && rightInset > 4.0) rightInset = (leftInset * 2.0) + 1.0;
+                        if (topInset > (bottomInset * 2.6) && topInset > 3.0) topInset = (bottomInset * 2.0) + 0.8;
+                        if (bottomInset > (topInset * 2.6) && bottomInset > 3.0) bottomInset = (topInset * 2.0) + 0.8;
+
+                        CGFloat maxHorizontalInset = MIN(24.0, MAX(2.0, textRect.size.width * 0.42));
+                        CGFloat maxVerticalInset = MIN(16.0, MAX(1.5, textRect.size.height * 0.55));
+
+                        insets = UIEdgeInsetsMake(MIN(maxVerticalInset, topInset),
+                                                  MIN(maxHorizontalInset, leftInset),
+                                                  MIN(maxVerticalInset, bottomInset),
+                                                  MIN(maxHorizontalInset, rightInset));
+
+                        NSInteger outerMinX = MAX(0, innerMinX - leftGrow);
+                        NSInteger outerMaxX = MIN((NSInteger)w, innerMaxX + rightGrow);
+                        NSInteger outerMinY = MAX(0, innerMinY - topGrow);
+                        NSInteger outerMaxY = MIN((NSInteger)h, innerMaxY + bottomGrow);
+
+                        NSInteger cornerSpanX = MAX(1, (outerMaxX - outerMinX) / 5);
+                        NSInteger cornerSpanY = MAX(1, (outerMaxY - outerMinY) / 5);
+
+                        CGFloat (^cornerFillRatio)(NSInteger, NSInteger, NSInteger, NSInteger) = ^CGFloat(NSInteger minX, NSInteger maxX, NSInteger minY, NSInteger maxY) {
+                            NSInteger total = 0;
+                            NSInteger hit = 0;
+                            for (NSInteger y = minY; y < maxY; y++) {
+                                for (NSInteger x = minX; x < maxX; x++) {
+                                    total++;
+                                    if (isBgLike(x, y)) hit++;
+                                }
+                            }
+                            return (CGFloat)hit / (CGFloat)MAX(1, total);
+                        };
+
+                        CGFloat tl = cornerFillRatio(outerMinX, MIN((NSInteger)w, outerMinX + cornerSpanX), outerMinY, MIN((NSInteger)h, outerMinY + cornerSpanY));
+                        CGFloat tr = cornerFillRatio(MAX(0, outerMaxX - cornerSpanX), outerMaxX, outerMinY, MIN((NSInteger)h, outerMinY + cornerSpanY));
+                        CGFloat bl = cornerFillRatio(outerMinX, MIN((NSInteger)w, outerMinX + cornerSpanX), MAX(0, outerMaxY - cornerSpanY), outerMaxY);
+                        CGFloat brCorner = cornerFillRatio(MAX(0, outerMaxX - cornerSpanX), outerMaxX, MAX(0, outerMaxY - cornerSpanY), outerMaxY);
+                        CGFloat avgCornerFill = (tl + tr + bl + brCorner) * 0.25;
+
+                        CGFloat bgHeight = textRect.size.height + insets.top + insets.bottom;
+                        if (avgCornerFill < 0.56) {
+                            smartCornerRadius = MIN(12.0, MAX(4.0, bgHeight * 0.48));
+                        } else {
+                            smartCornerRadius = MIN(10.0, MAX(2.0, bgHeight * 0.18));
+                        }
 
                         CGContextRelease(ctx);
                     }
@@ -2327,7 +2440,7 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         style[@"bgStart"] = bgStart ?: backgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0];
         style[@"bgEnd"] = bgEnd ?: backgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0];
         style[@"bgInsets"] = [NSValue valueWithUIEdgeInsets:insets];
-        style[@"bgCornerRadius"] = @(3.0);
+        style[@"bgCornerRadius"] = @(smartCornerRadius);
     }
     return style;
 }
