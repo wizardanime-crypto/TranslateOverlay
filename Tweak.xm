@@ -2685,10 +2685,17 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                     CGRect rect = [self imageRectForNormalizedVisionRect:obs.boundingBox imageSize:image.size];
                     UIColor *autoColor = [self detectedTextColorInImage:image rect:rect];
                     UIColor *autoBackgroundColor = [self detectedBackgroundColorInImage:image rect:rect textColor:autoColor];
+                    TOTranslationManager *fallbackSettings = [TOTranslationManager shared];
+                    UIColor *fallbackTextColor = UIColor.whiteColor;
+                    if (!autoColor && fallbackSettings.ocrAutoColorEnabled && fallbackSettings.ocrBackgroundAutoColorEnabled) {
+                        UIColor *bgHint = autoBackgroundColor ?: [self averageColorInImage:image rect:rect excludingColor:nil minDistance:0.0];
+                        CGFloat bgLum = TOLuminanceForColor(bgHint);
+                        fallbackTextColor = (bgLum >= 0.52) ? UIColor.blackColor : UIColor.whiteColor;
+                    }
                     NSMutableDictionary *item = [@{
                         @"source": top.string,
                         @"rect": [NSValue valueWithCGRect:rect],
-                        @"detectedColor": autoColor ?: UIColor.whiteColor,
+                        @"detectedColor": autoColor ?: fallbackTextColor,
                         @"detectedBackgroundColor": autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0]
                     } mutableCopy];
 
@@ -2781,10 +2788,17 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
                         CGRect rect = [self imageRectForNormalizedVisionRect:obs.boundingBox imageSize:image.size];
                         UIColor *autoColor = [self detectedTextColorInImage:image rect:rect];
                         UIColor *autoBackgroundColor = [self detectedBackgroundColorInImage:image rect:rect textColor:autoColor];
+                        TOTranslationManager *fallbackSettings = [TOTranslationManager shared];
+                        UIColor *fallbackTextColor = UIColor.whiteColor;
+                        if (!autoColor && fallbackSettings.ocrAutoColorEnabled && fallbackSettings.ocrBackgroundAutoColorEnabled) {
+                            UIColor *bgHint = autoBackgroundColor ?: [self averageColorInImage:image rect:rect excludingColor:nil minDistance:0.0];
+                            CGFloat bgLum = TOLuminanceForColor(bgHint);
+                            fallbackTextColor = (bgLum >= 0.52) ? UIColor.blackColor : UIColor.whiteColor;
+                        }
                         NSMutableDictionary *item = [@{
                             @"source": top.string,
                             @"rect": [NSValue valueWithCGRect:rect],
-                            @"detectedColor": autoColor ?: UIColor.whiteColor,
+                            @"detectedColor": autoColor ?: fallbackTextColor,
                             @"detectedBackgroundColor": autoBackgroundColor ?: [UIColor colorWithWhite:0.0 alpha:1.0]
                         } mutableCopy];
 
