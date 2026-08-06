@@ -165,6 +165,45 @@ static NSString *TONormalizedLocaleIdentifier(NSString *languageCode) {
     return code;
 }
 
+static NSString *TOLibreLanguageCode(NSString *code) {
+    if (code.length == 0) return @"auto";
+    NSString *normalized = [[TONormalizedLocaleIdentifier(code) ?: @"auto" lowercaseString] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (normalized.length == 0) return @"auto";
+    if ([normalized isEqualToString:@"auto"]) return @"auto";
+    if ([normalized hasPrefix:@"zh"]) return @"zh";
+    NSArray<NSString *> *parts = [normalized componentsSeparatedByString:@"-"];
+    NSString *base = parts.firstObject ?: normalized;
+    return base.length > 0 ? base : @"auto";
+}
+
+static NSArray<NSString *> *TOLibreTranslateEndpoints(void) {
+    return @[
+        @"https://translate.argosopentech.com/translate",
+        @"https://libretranslate.de/translate"
+    ];
+}
+
+static NSString *TOJoinRecognizedLines(NSArray<VNRecognizedTextObservation *> *observations, NSInteger maxLines) {
+    if (![observations isKindOfClass:[NSArray class]] || observations.count == 0) return @"";
+    NSArray<VNRecognizedTextObservation *> *sorted = [observations sortedArrayUsingComparator:^NSComparisonResult(VNRecognizedTextObservation *a, VNRecognizedTextObservation *b) {
+        CGFloat ay = CGRectGetMaxY(a.boundingBox);
+        CGFloat by = CGRectGetMaxY(b.boundingBox);
+        if (fabs(ay - by) > 0.035) return (ay > by) ? NSOrderedAscending : NSOrderedDescending;
+        CGFloat ax = CGRectGetMinX(a.boundingBox);
+        CGFloat bx = CGRectGetMinX(b.boundingBox);
+        return (ax < bx) ? NSOrderedAscending : NSOrderedDescending;
+    }];
+
+    NSMutableArray<NSString *> *lines = [NSMutableArray array];
+    NSInteger cap = (maxLines > 0) ? MIN(maxLines, (NSInteger)sorted.count) : (NSInteger)sorted.count;
+    for (NSInteger i = 0; i < cap; i++) {
+        VNRecognizedText *top = [[sorted[i] topCandidates:1] firstObject];
+        NSString *s = [top.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        if (s.length > 0) [lines addObject:s];
+    }
+    return [lines componentsJoinedByString:@"\n"];
+}
+
 static const void *kTOTranslateGuardKey = &kTOTranslateGuardKey;
 static const void *kTOTranslateLastTextKey = &kTOTranslateLastTextKey;
 static const void *kTOTranslateLastTargetKey = &kTOTranslateLastTargetKey;
@@ -490,6 +529,8 @@ static UIColor *TOReadableTextFallbackForBackground(UIColor *backgroundColor) {
 - (void)translateOCRText:(NSString *)text completion:(void (^)(NSString *translated))completion;
 - (void)applyLiveCorrectionsFromItems:(NSArray<NSDictionary *> *)items;
 - (NSString *)applyReplacementWordsToText:(NSString *)text;
+- (void)translateTextUsingLibreTranslate:(NSString *)text sourceLanguage:(NSString *)sourceLanguage targetLanguage:(NSString *)targetLanguage completion:(void (^)(NSString *translated))completion;
+- (void)translateTextUsingLibreTranslate:(NSString *)text sourceLanguage:(NSString *)sourceLanguage targetLanguage:(NSString *)targetLanguage endpointIndex:(NSInteger)endpointIndex completion:(void (^)(NSString *translated))completion;
 - (NSDictionary<NSString *, NSString *> *)replacementWordsSnapshot;
 - (BOOL)upsertReplacementWordFrom:(NSString *)from to:(NSString *)to;
 - (BOOL)removeReplacementWordForKey:(NSString *)from;
@@ -794,6 +835,35 @@ static UIColor *TOReadableTextFallbackForBackground(UIColor *backgroundColor) {
         return;
     }
 
+    void (^completeWithRaw)(NSString *, BOOL) = ^(NSString *rawTranslation, BOOL isValidPayload) {
+        NSString *raw = rawTranslation ?: inputText;
+        NSString *finalResult = raw;
+        if (isValidPayload) {
+            NSString *processed = [self applyReplacementWordsToText:raw];
+            if (processed.length > 0) finalResult = processed;
+        }
+
+        if (isValidPayload && raw.length > 0) {
+            [self.cache setObject:raw forKey:cacheKey];
+            @synchronized (self) {
+                self.persistentCache[cacheKey] = raw;
+                if (self.persistentCache.count > 500) {
+                    NSString *first = self.persistentCache.allKeys.firstObject;
+                    if (first) [self.persistentCache removeObjectForKey:first];
+                }
+            }
+            [self saveSettings];
+        }
+
+        @synchronized (self) {
+            [self.inFlightTranslationKeys removeObject:cacheKey];
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (completion) completion(finalResult);
+        });
+    };
+
     [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
         NSString *result = inputText;
         BOOL didGetValidTranslationPayload = NO;
@@ -811,40 +881,103 @@ static UIColor *TOReadableTextFallbackForBackground(UIColor *backgroundColor) {
                             }
                         }
                     }
-                    if (combined.length > 0) {
+                    NSString *candidate = [combined stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                    if (candidate.length > 0) {
                         didGetValidTranslationPayload = YES;
-                        result = combined;
+                        result = candidate;
                     }
                 }
             }
         }
 
-        NSString *finalResult = result;
-        if (didGetValidTranslationPayload) {
-            NSString *processed = [self applyReplacementWordsToText:result];
-            if (processed.length > 0) finalResult = processed;
+        NSString *preparedTrim = [preparedText stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        NSString *resultTrim = [result stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+        BOOL looksUnchanged = (preparedTrim.length > 0 && [resultTrim isEqualToString:preparedTrim]);
+        BOOL shouldTryOpenSourceFallback = (!didGetValidTranslationPayload || looksUnchanged);
+
+        if (!shouldTryOpenSourceFallback) {
+            completeWithRaw(result, YES);
+            return;
         }
 
-        // Cache raw translated text only; replacement words are applied dynamically at display time.
-        if (didGetValidTranslationPayload && result.length > 0) {
-            [self.cache setObject:result forKey:cacheKey];
-            @synchronized (self) {
-                self.persistentCache[cacheKey] = result;
-                if (self.persistentCache.count > 500) {
-                    NSString *first = self.persistentCache.allKeys.firstObject;
-                    if (first) [self.persistentCache removeObjectForKey:first];
+        [self translateTextUsingLibreTranslate:preparedText sourceLanguage:sl targetLanguage:target completion:^(NSString *translated) {
+            NSString *fallback = [translated stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            BOOL fallbackValid = (fallback.length > 0 && ![fallback isEqualToString:preparedTrim]);
+            if (fallbackValid) {
+                completeWithRaw(fallback, YES);
+                return;
+            }
+
+            if (didGetValidTranslationPayload) {
+                completeWithRaw(result, YES);
+            } else {
+                completeWithRaw(inputText, NO);
+            }
+        }];
+    }] resume];
+}
+
+- (void)translateTextUsingLibreTranslate:(NSString *)text sourceLanguage:(NSString *)sourceLanguage targetLanguage:(NSString *)targetLanguage completion:(void (^)(NSString *translated))completion {
+    NSString *input = [text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (input.length == 0) {
+        if (completion) completion(@"");
+        return;
+    }
+
+    NSString *sourceCode = TOLibreLanguageCode(sourceLanguage);
+    NSString *targetCode = TOLibreLanguageCode(targetLanguage);
+    if (targetCode.length == 0 || [targetCode isEqualToString:@"auto"]) targetCode = @"ar";
+
+    [self translateTextUsingLibreTranslate:input sourceLanguage:sourceCode targetLanguage:targetCode endpointIndex:0 completion:completion];
+}
+
+- (void)translateTextUsingLibreTranslate:(NSString *)text sourceLanguage:(NSString *)sourceLanguage targetLanguage:(NSString *)targetLanguage endpointIndex:(NSInteger)endpointIndex completion:(void (^)(NSString *translated))completion {
+    NSArray<NSString *> *endpoints = TOLibreTranslateEndpoints();
+    if (endpointIndex >= (NSInteger)endpoints.count) {
+        if (completion) completion(@"");
+        return;
+    }
+
+    NSURL *url = [NSURL URLWithString:endpoints[endpointIndex]];
+    if (!url) {
+        [self translateTextUsingLibreTranslate:text sourceLanguage:sourceLanguage targetLanguage:targetLanguage endpointIndex:(endpointIndex + 1) completion:completion];
+        return;
+    }
+
+    NSMutableURLRequest *req = [NSMutableURLRequest requestWithURL:url];
+    req.HTTPMethod = @"POST";
+    req.timeoutInterval = 2.4;
+    [req setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+
+    NSDictionary *body = @{
+        @"q": text ?: @"",
+        @"source": sourceLanguage ?: @"auto",
+        @"target": targetLanguage ?: @"ar",
+        @"format": @"text"
+    };
+
+    NSData *payload = [NSJSONSerialization dataWithJSONObject:body options:0 error:nil];
+    if (!payload) {
+        [self translateTextUsingLibreTranslate:text sourceLanguage:sourceLanguage targetLanguage:targetLanguage endpointIndex:(endpointIndex + 1) completion:completion];
+        return;
+    }
+    req.HTTPBody = payload;
+
+    [[[NSURLSession sharedSession] dataTaskWithRequest:req completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        (void)response;
+        if (!error && data.length > 0) {
+            id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            if ([json isKindOfClass:[NSDictionary class]]) {
+                NSString *translated = [json[@"translatedText"] isKindOfClass:[NSString class]] ? json[@"translatedText"] : nil;
+                translated = [translated stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                if (translated.length > 0) {
+                    if (completion) completion(translated);
+                    return;
                 }
             }
-            [self saveSettings];
         }
 
-        @synchronized (self) {
-            [self.inFlightTranslationKeys removeObject:cacheKey];
-        }
-
-        dispatch_async(dispatch_get_main_queue(), ^{
-            if (completion) completion(finalResult);
-        });
+        [self translateTextUsingLibreTranslate:text sourceLanguage:sourceLanguage targetLanguage:targetLanguage endpointIndex:(endpointIndex + 1) completion:completion];
     }] resume];
 }
 
@@ -1697,6 +1830,7 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 - (void)buildLiveTranslatedOverlayForWindow:(UIWindow *)window excludingViews:(NSArray<UIView *> *)excludedViews completion:(void (^)(UIImage *resultImage, UIImage *baseImage, NSArray<NSMutableDictionary *> *translatedItems))completion;
 - (UIImage *)renderTranslatedTextOnImage:(UIImage *)image items:(NSArray<NSDictionary *> *)items;
 - (UIImage *)captureScreenshot:(UIWindow *)window excludingViews:(NSArray<UIView *> *)excludedViews;
+- (NSString *)recognizedTextInImage:(UIImage *)image region:(CGRect)region maxLines:(NSInteger)maxLines;
 @end
 
 @implementation TOPageOCRController
@@ -1745,6 +1879,45 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     CGFloat height = normalizedRect.size.height * size.height;
     CGFloat y = (1.0 - normalizedRect.origin.y - normalizedRect.size.height) * size.height;
     return CGRectIntegral(CGRectMake(x, y, width, height));
+}
+
+- (NSString *)recognizedTextInImage:(UIImage *)image region:(CGRect)region maxLines:(NSInteger)maxLines {
+    if (!image.CGImage || CGRectIsEmpty(region)) return @"";
+
+    CGRect safe = CGRectIntersection(region, CGRectMake(0, 0, image.size.width, image.size.height));
+    if (CGRectIsEmpty(safe) || safe.size.width < 4 || safe.size.height < 4) return @"";
+
+    CGFloat scaleX = (CGFloat)CGImageGetWidth(image.CGImage) / image.size.width;
+    CGFloat scaleY = (CGFloat)CGImageGetHeight(image.CGImage) / image.size.height;
+    CGRect pxRect = CGRectIntegral(CGRectMake(safe.origin.x * scaleX, safe.origin.y * scaleY, safe.size.width * scaleX, safe.size.height * scaleY));
+    CGImageRef cropped = CGImageCreateWithImageInRect(image.CGImage, pxRect);
+    if (!cropped) return @"";
+
+    __block NSString *recognized = @"";
+    if (@available(iOS 13.0, *)) {
+        VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
+        request.recognitionLevel = VNRequestTextRecognitionLevelAccurate;
+        request.usesLanguageCorrection = YES;
+        request.minimumTextHeight = 0.010;
+
+        TOTranslationManager *settings = [TOTranslationManager shared];
+        NSString *sourceCode = settings.sourceLanguage ?: @"auto";
+        if (![sourceCode isEqualToString:@"auto"]) {
+            NSString *recognizedLanguage = TONormalizedLocaleIdentifier(sourceCode);
+            if (recognizedLanguage.length > 0) request.recognitionLanguages = @[recognizedLanguage];
+        }
+
+        NSError *err = nil;
+        VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:cropped options:@{}];
+        [handler performRequests:@[request] error:&err];
+        if (!err) {
+            NSArray<VNRecognizedTextObservation *> *obs = request.results;
+            recognized = TOJoinRecognizedLines(obs, maxLines);
+        }
+    }
+
+    CGImageRelease(cropped);
+    return [recognized stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet] ?: @"";
 }
 
 - (UIColor *)detectedTextColorInImage:(UIImage *)image rect:(CGRect)rect {
@@ -3435,11 +3608,12 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
         close.frame = CGRectMake(panel.bounds.size.width - 52, 4, 44, 26);
         close.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-        [close setTitle:TOUIString(@"إغلاق") forState:UIControlStateNormal];
+        [close setTitle:@"x" forState:UIControlStateNormal];
         [close setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
-        close.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+        close.titleLabel.font = [UIFont boldSystemFontOfSize:16];
         close.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.12];
         close.layer.cornerRadius = 8;
+        close.accessibilityLabel = TOUIString(@"إغلاق");
         [close addTarget:self action:@selector(lensClosePressed) forControlEvents:UIControlEventTouchUpInside];
         objc_setAssociatedObject(close, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [header addSubview:close];
@@ -3605,46 +3779,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     }
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
-        __block NSString *sourceText = @"";
-        if (@available(iOS 13.0, *)) {
-            CGFloat scaleX = (CGFloat)CGImageGetWidth(image.CGImage) / image.size.width;
-            CGFloat scaleY = (CGFloat)CGImageGetHeight(image.CGImage) / image.size.height;
-            CGRect pxRect = CGRectIntegral(CGRectMake(region.origin.x * scaleX, region.origin.y * scaleY, region.size.width * scaleX, region.size.height * scaleY));
-            CGImageRef cropped = CGImageCreateWithImageInRect(image.CGImage, pxRect);
-            if (cropped) {
-                VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
-                request.recognitionLevel = VNRequestTextRecognitionLevelFast;
-                request.usesLanguageCorrection = YES;
-                request.minimumTextHeight = 0.012;
-
-                NSError *err = nil;
-                VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:cropped options:@{}];
-                [handler performRequests:@[request] error:&err];
-                if (!err) {
-                    NSArray<VNRecognizedTextObservation *> *obs = request.results;
-                    if ([obs isKindOfClass:[NSArray class]] && obs.count > 0) {
-                        NSArray<VNRecognizedTextObservation *> *sorted = [obs sortedArrayUsingComparator:^NSComparisonResult(VNRecognizedTextObservation *a, VNRecognizedTextObservation *b) {
-                            CGFloat ay = CGRectGetMaxY(a.boundingBox);
-                            CGFloat by = CGRectGetMaxY(b.boundingBox);
-                            if (fabs(ay - by) > 0.04) return (ay > by) ? NSOrderedAscending : NSOrderedDescending;
-                            CGFloat ax = CGRectGetMinX(a.boundingBox);
-                            CGFloat bx = CGRectGetMinX(b.boundingBox);
-                            return (ax < bx) ? NSOrderedAscending : NSOrderedDescending;
-                        }];
-
-                        NSMutableArray<NSString *> *lines = [NSMutableArray array];
-                        NSInteger cap = MIN((NSInteger)sorted.count, 6);
-                        for (NSInteger i = 0; i < cap; i++) {
-                            VNRecognizedText *top = [[sorted[i] topCandidates:1] firstObject];
-                            NSString *s = [top.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
-                            if (s.length > 0) [lines addObject:s];
-                        }
-                        sourceText = [lines componentsJoinedByString:@"\n"];
-                    }
-                }
-                CGImageRelease(cropped);
-            }
-        }
+        NSString *sourceText = [[TOPageOCRController shared] recognizedTextInImage:image region:region maxLines:10];
 
         dispatch_async(dispatch_get_main_queue(), ^{
             if (token != self.lensScanGeneration) return;
