@@ -46,7 +46,8 @@ static BOOL TOShouldTranslateText(NSString *text) {
 typedef NS_ENUM(NSInteger, TOTranslationTapMode) {
     TOTranslationTapModeNormal = 0,
     TOTranslationTapModeManga = 1,
-    TOTranslationTapModeLive = 2
+    TOTranslationTapModeLive = 2,
+    TOTranslationTapModeLens = 3
 };
 
 static volatile NSInteger gTOTranslationTapModeSnapshot = TOTranslationTapModeNormal;
@@ -566,7 +567,7 @@ static UIColor *TOReadableTextFallbackForBackground(UIColor *backgroundColor) {
     self.mangaTranslationModeEnabled = mangaMode ? [mangaMode boolValue] : NO;
 
     NSInteger tapMode = [d integerForKey:kTOTranslationTapModeKey];
-    if (tapMode < TOTranslationTapModeNormal || tapMode > TOTranslationTapModeLive) tapMode = TOTranslationTapModeNormal;
+    if (tapMode < TOTranslationTapModeNormal || tapMode > TOTranslationTapModeLens) tapMode = TOTranslationTapModeNormal;
     self.translationTapMode = tapMode;
     TOUpdateTranslationModeSnapshot(self.translationTapMode, NO);
 
@@ -1124,6 +1125,8 @@ static void TOWarmupUILocalization(void) {
             @"لون الخلفية: التشبع", @"تعتيم الخلفية", @"تعتيم خلفية النص", @"رجوع", @"إلغاء",
             @"تم", @"إغلاق", @"حفظ", @"تحرير", @"تحرير نص OCR", @"حجم نص OCR", @"نتيجة OCR", @"المصدر", @"الهدف",
             @"جارٍ التقاط الصفحة وتحليلها...", @"تمت محاولة الترجمة",
+            @"زر نمط العدسه", @"تم تفعيل نمط العدسه", @"اسحب الزر فوق النص لبدء ترجمة العدسه",
+            @"العدسه", @"اسحب الزر فوق النص", @"الترجمة", @"النص الأصلي", @"نسخ الترجمة", @"نسخ الأصلي", @"تم النسخ", @"تم التحديث", @"تم إيقاف نمط العدسه",
             @"زمن تأخير الترجمة المباشره", @"ادخل الزمن بالمللي ثانية", @"تم ضبط زمن التأخير",
             @"تحرير الترجمه المباشره", @"فعّل تحرير النص بعد ترجمة OCR أولاً", @"لا يوجد نص مباشر لتحريره الآن",
             @"الكلمات البديله", @"تفعيل الكلمات البديله", @"إضافة كلمة بديلة", @"الكلمة الأصلية", @"الكلمة البديلة",
@@ -1155,6 +1158,8 @@ static NSString *TOTranslationModeLabel(TOTranslationTapMode mode) {
             return TOUIString(@"زر نمط ترجمة المانجا");
         case TOTranslationTapModeLive:
             return TOUIString(@"زر نمط الترجمه المباشره");
+        case TOTranslationTapModeLens:
+            return TOUIString(@"زر نمط العدسه");
         case TOTranslationTapModeNormal:
         default:
             return TOUIString(@"ترجمة التطبيق");
@@ -1691,6 +1696,7 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
 - (void)presentOCRForWindow:(UIWindow *)window completion:(void (^)(void))completion;
 - (void)buildLiveTranslatedOverlayForWindow:(UIWindow *)window excludingViews:(NSArray<UIView *> *)excludedViews completion:(void (^)(UIImage *resultImage, UIImage *baseImage, NSArray<NSMutableDictionary *> *translatedItems))completion;
 - (UIImage *)renderTranslatedTextOnImage:(UIImage *)image items:(NSArray<NSDictionary *> *)items;
+- (UIImage *)captureScreenshot:(UIWindow *)window excludingViews:(NSArray<UIView *> *)excludedViews;
 @end
 
 @implementation TOPageOCRController
@@ -2384,6 +2390,19 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 @property (nonatomic, assign) NSUInteger liveTouchResumeGeneration;
 @property (nonatomic, strong) NSTimer *appTranslateTimer;
 @property (nonatomic, assign) NSUInteger appTranslateBurstGeneration;
+@property (nonatomic, assign) BOOL lensModeEnabled;
+@property (nonatomic, strong) UIView *lensPanelView;
+@property (nonatomic, strong) UITextView *lensTranslatedTextView;
+@property (nonatomic, strong) UITextView *lensOriginalTextView;
+@property (nonatomic, strong) UILabel *lensStatusLabel;
+@property (nonatomic, assign) BOOL lensScanInFlight;
+@property (nonatomic, assign) BOOL lensPendingScan;
+@property (nonatomic, assign) CGPoint lensPendingPoint;
+@property (nonatomic, assign) NSTimeInterval lensLastScanTime;
+@property (nonatomic, assign) NSUInteger lensScanGeneration;
+@property (nonatomic, assign) BOOL lensPanelUserResized;
+@property (nonatomic, copy) NSString *lensCurrentSourceText;
+@property (nonatomic, copy) NSString *lensCurrentTranslatedText;
 + (instancetype)shared;
 - (void)installIfPossible;
 - (void)showToast:(NSString *)message;
@@ -2416,6 +2435,10 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)showOCRTextSizePicker;
 - (void)showLanguagePicker:(BOOL)isSource;
 - (void)openDeveloperPage;
+- (void)syncLensModeState;
+- (void)hideLensPanel;
+- (void)startLensScanFromCurrentButtonPosition;
+- (void)requestLensTranslationAtPoint:(CGPoint)point inWindow:(UIWindow *)window force:(BOOL)force;
 - (NSArray<NSDictionary *> *)colorStops;
 - (NSDictionary *)colorStopForNormalized:(CGFloat)normalized;
 - (CGFloat)normalizedValueForHue:(CGFloat)h saturation:(CGFloat)s brightness:(CGFloat)b;
@@ -3232,6 +3255,444 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     [self startOCRForMangaMode:(m.translationTapMode == TOTranslationTapModeManga)];
 }
 
+- (void)lensCopyTranslatedPressed {
+    NSString *text = [self.lensTranslatedTextView.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (text.length == 0) {
+        [self showToast:TOUIString(@"لا يوجد نص مباشر لتحريره الآن")];
+        return;
+    }
+    UIPasteboard.generalPasteboard.string = text;
+    [self showToast:TOUIString(@"تم النسخ")];
+}
+
+- (void)lensCopyOriginalPressed {
+    NSString *text = [self.lensOriginalTextView.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (text.length == 0) {
+        [self showToast:TOUIString(@"لا يوجد نص مباشر لتحريره الآن")];
+        return;
+    }
+    UIPasteboard.generalPasteboard.string = text;
+    [self showToast:TOUIString(@"تم النسخ")];
+}
+
+- (void)lensSavePressed {
+    NSString *source = [self.lensOriginalTextView.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    NSString *translated = [self.lensTranslatedTextView.text stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+    if (source.length == 0) {
+        [self showToast:TOUIString(@"لا يوجد نص مباشر لتحريره الآن")];
+        return;
+    }
+
+    void (^savePair)(NSString *, NSString *) = ^(NSString *savedSource, NSString *savedTranslated) {
+        if (savedSource.length == 0 || savedTranslated.length == 0) return;
+        self.lensCurrentSourceText = savedSource;
+        self.lensCurrentTranslatedText = savedTranslated;
+        self.lensOriginalTextView.text = savedSource;
+        self.lensTranslatedTextView.text = savedTranslated;
+
+        NSDictionary *item = @{ @"source": savedSource, @"translated": savedTranslated };
+        [[TOTranslationManager shared] applyLiveCorrectionsFromItems:@[item]];
+        TOForceImmediateUILocalizationRefresh();
+        [self showToast:TOUIString(@"تم حفظ الكلمات البديله")];
+    };
+
+    if (translated.length == 0) {
+        [[TOTranslationManager shared] translateOCRText:source completion:^(NSString *translatedText) {
+            NSString *finalTranslated = [translatedText stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (finalTranslated.length == 0) finalTranslated = source;
+            savePair(source, finalTranslated);
+        }];
+        return;
+    }
+
+    savePair(source, translated);
+}
+
+- (void)lensClosePressed {
+    [self hideLensPanel];
+    self.lensModeEnabled = NO;
+    [self showToast:TOUIString(@"تم إيقاف نمط العدسه")];
+}
+
+- (void)lensPanelPan:(UIPanGestureRecognizer *)g {
+    UIView *panel = self.lensPanelView;
+    UIWindow *window = panel.window;
+    if (!panel || !window) return;
+
+    CGPoint t = [g translationInView:window];
+    CGPoint c = panel.center;
+    c.x += t.x;
+    c.y += t.y;
+    CGFloat halfW = panel.bounds.size.width * 0.5;
+    CGFloat halfH = panel.bounds.size.height * 0.5;
+    c.x = MIN(MAX(c.x, halfW + 8.0), window.bounds.size.width - halfW - 8.0);
+    c.y = MIN(MAX(c.y, halfH + 8.0), window.bounds.size.height - halfH - 8.0);
+    panel.center = c;
+    [g setTranslation:CGPointZero inView:window];
+}
+
+- (void)lensResizePan:(UIPanGestureRecognizer *)g {
+    UIView *panel = self.lensPanelView;
+    UIWindow *window = panel.window;
+    if (!panel || !window) return;
+
+    CGPoint t = [g translationInView:panel];
+    CGRect f = panel.frame;
+    CGFloat minW = 230.0;
+    CGFloat minH = 200.0;
+    CGFloat maxW = MIN(window.bounds.size.width - 12.0, 560.0);
+    CGFloat maxH = MIN(window.bounds.size.height - 24.0, 620.0);
+    f.size.width = MIN(MAX(f.size.width + t.x, minW), maxW);
+    f.size.height = MIN(MAX(f.size.height + t.y, minH), maxH);
+
+    CGFloat maxX = window.bounds.size.width - 8.0;
+    CGFloat maxY = window.bounds.size.height - 8.0;
+    if (CGRectGetMaxX(f) > maxX) f.origin.x = maxX - f.size.width;
+    if (CGRectGetMaxY(f) > maxY) f.origin.y = maxY - f.size.height;
+
+    panel.frame = f;
+    self.lensPanelUserResized = YES;
+    [self lensLayoutPanelSubviewsAutoFit:NO];
+    [g setTranslation:CGPointZero inView:panel];
+}
+
+- (void)lensLayoutPanelSubviewsAutoFit:(BOOL)autoFit {
+    UIView *panel = self.lensPanelView;
+    UIWindow *window = panel.window;
+    if (!panel) return;
+
+    CGFloat width = panel.bounds.size.width;
+    CGFloat translatedFit = [self.lensTranslatedTextView sizeThatFits:CGSizeMake(MAX(80.0, width - 24.0), CGFLOAT_MAX)].height;
+    CGFloat originalFit = [self.lensOriginalTextView sizeThatFits:CGSizeMake(MAX(80.0, width - 24.0), CGFLOAT_MAX)].height;
+
+    if (autoFit && !self.lensPanelUserResized && window) {
+        CGFloat wanted = 128.0 + MIN(360.0, translatedFit + originalFit);
+        CGFloat minH = 210.0;
+        CGFloat maxH = MIN(window.bounds.size.height - 20.0, 620.0);
+        CGRect f = panel.frame;
+        f.size.height = MIN(MAX(wanted, minH), maxH);
+        if (CGRectGetMaxY(f) > window.bounds.size.height - 8.0) f.origin.y = (window.bounds.size.height - 8.0) - f.size.height;
+        panel.frame = f;
+    }
+
+    CGFloat h = panel.bounds.size.height;
+    UIView *header = [panel viewWithTag:9101];
+    UIView *buttonsRow = [panel viewWithTag:9102];
+    UIView *resizeHandle = [panel viewWithTag:9103];
+    UILabel *translatedLabel = (UILabel *)[panel viewWithTag:9104];
+    UILabel *originalLabel = (UILabel *)[panel viewWithTag:9105];
+
+    header.frame = CGRectMake(0, 0, width, 34);
+    buttonsRow.frame = CGRectMake(8, h - 38, width - 16, 30);
+
+    CGFloat contentTop = CGRectGetMaxY(header.frame) + 4;
+    CGFloat contentBottom = CGRectGetMinY(buttonsRow.frame) - 4;
+    CGFloat contentH = MAX(80.0, contentBottom - contentTop);
+    CGFloat half = floor((contentH - 22.0) * 0.5);
+
+    translatedLabel.frame = CGRectMake(10, contentTop, width - 20, 18);
+    self.lensTranslatedTextView.frame = CGRectMake(8, CGRectGetMaxY(translatedLabel.frame) + 2, width - 16, MAX(36.0, half - 2));
+
+    originalLabel.frame = CGRectMake(10, CGRectGetMaxY(self.lensTranslatedTextView.frame) + 4, width - 20, 18);
+    self.lensOriginalTextView.frame = CGRectMake(8, CGRectGetMaxY(originalLabel.frame) + 2, width - 16, MAX(36.0, contentBottom - (CGRectGetMaxY(originalLabel.frame) + 2)));
+
+    resizeHandle.frame = CGRectMake(width - 26, h - 26, 20, 20);
+}
+
+- (void)ensureLensPanelInWindow:(UIWindow *)window {
+    if (!window) return;
+
+    if (!self.lensPanelView) {
+        UIView *panel = [[UIView alloc] initWithFrame:CGRectMake(16, 150, MIN(window.bounds.size.width - 24, 360), 260)];
+        panel.backgroundColor = [[UIColor blackColor] colorWithAlphaComponent:0.82];
+        panel.layer.cornerRadius = 12;
+        panel.layer.borderColor = [[UIColor whiteColor] colorWithAlphaComponent:0.16].CGColor;
+        panel.layer.borderWidth = 1.0;
+        panel.clipsToBounds = YES;
+        objc_setAssociatedObject(panel, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        UIView *header = [[UIView alloc] initWithFrame:CGRectZero];
+        header.tag = 9101;
+        header.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.06];
+        objc_setAssociatedObject(header, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        UILabel *title = [[UILabel alloc] initWithFrame:CGRectMake(10, 2, panel.bounds.size.width - 106, 16)];
+        title.text = TOUIString(@"العدسه");
+        title.textColor = UIColor.whiteColor;
+        title.font = [UIFont boldSystemFontOfSize:13];
+        objc_setAssociatedObject(title, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [header addSubview:title];
+
+        UILabel *status = [[UILabel alloc] initWithFrame:CGRectMake(10, 16, panel.bounds.size.width - 106, 16)];
+        status.text = TOUIString(@"اسحب الزر فوق النص");
+        status.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.84];
+        status.font = [UIFont systemFontOfSize:11 weight:UIFontWeightMedium];
+        status.adjustsFontSizeToFitWidth = YES;
+        objc_setAssociatedObject(status, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [header addSubview:status];
+        self.lensStatusLabel = status;
+
+        UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
+        close.frame = CGRectMake(panel.bounds.size.width - 52, 4, 44, 26);
+        close.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
+        [close setTitle:TOUIString(@"إغلاق") forState:UIControlStateNormal];
+        [close setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+        close.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+        close.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.12];
+        close.layer.cornerRadius = 8;
+        [close addTarget:self action:@selector(lensClosePressed) forControlEvents:UIControlEventTouchUpInside];
+        objc_setAssociatedObject(close, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [header addSubview:close];
+
+        UIPanGestureRecognizer *headerPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(lensPanelPan:)];
+        [header addGestureRecognizer:headerPan];
+        [panel addSubview:header];
+
+        UILabel *translatedLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        translatedLabel.tag = 9104;
+        translatedLabel.text = TOUIString(@"الترجمة");
+        translatedLabel.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.86];
+        translatedLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+        objc_setAssociatedObject(translatedLabel, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [panel addSubview:translatedLabel];
+
+        UITextView *translatedView = [[UITextView alloc] initWithFrame:CGRectZero];
+        translatedView.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.08];
+        translatedView.textColor = UIColor.whiteColor;
+        translatedView.font = [UIFont boldSystemFontOfSize:14];
+        translatedView.layer.cornerRadius = 8;
+        translatedView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
+        translatedView.alwaysBounceVertical = YES;
+        translatedView.keyboardAppearance = UIKeyboardAppearanceDark;
+        objc_setAssociatedObject(translatedView, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [panel addSubview:translatedView];
+        self.lensTranslatedTextView = translatedView;
+
+        UILabel *originalLabel = [[UILabel alloc] initWithFrame:CGRectZero];
+        originalLabel.tag = 9105;
+        originalLabel.text = TOUIString(@"النص الأصلي");
+        originalLabel.textColor = [[UIColor whiteColor] colorWithAlphaComponent:0.86];
+        originalLabel.font = [UIFont systemFontOfSize:11 weight:UIFontWeightSemibold];
+        objc_setAssociatedObject(originalLabel, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [panel addSubview:originalLabel];
+
+        UITextView *originalView = [[UITextView alloc] initWithFrame:CGRectZero];
+        originalView.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.08];
+        originalView.textColor = UIColor.whiteColor;
+        originalView.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
+        originalView.layer.cornerRadius = 8;
+        originalView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
+        originalView.alwaysBounceVertical = YES;
+        originalView.keyboardAppearance = UIKeyboardAppearanceDark;
+        objc_setAssociatedObject(originalView, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        [panel addSubview:originalView];
+        self.lensOriginalTextView = originalView;
+
+        UIView *buttonsRow = [[UIView alloc] initWithFrame:CGRectZero];
+        buttonsRow.tag = 9102;
+        buttonsRow.backgroundColor = UIColor.clearColor;
+        objc_setAssociatedObject(buttonsRow, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+
+        NSArray<NSDictionary *> *buttons = @[
+            @{@"t": TOUIString(@"نسخ الترجمة"), @"a": NSStringFromSelector(@selector(lensCopyTranslatedPressed))},
+            @{@"t": TOUIString(@"نسخ الأصلي"), @"a": NSStringFromSelector(@selector(lensCopyOriginalPressed))},
+            @{@"t": TOUIString(@"حفظ"), @"a": NSStringFromSelector(@selector(lensSavePressed))}
+        ];
+
+        CGFloat bw = (panel.bounds.size.width - 32) / 3.0;
+        for (NSInteger i = 0; i < (NSInteger)buttons.count; i++) {
+            UIButton *btn = [UIButton buttonWithType:UIButtonTypeSystem];
+            btn.frame = CGRectMake(i * (bw + 4), 0, bw, 30);
+            [btn setTitle:buttons[i][@"t"] forState:UIControlStateNormal];
+            [btn setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+            btn.titleLabel.font = [UIFont systemFontOfSize:12 weight:UIFontWeightSemibold];
+            btn.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.13];
+            btn.layer.cornerRadius = 8;
+            SEL sel = NSSelectorFromString(buttons[i][@"a"]);
+            [btn addTarget:self action:sel forControlEvents:UIControlEventTouchUpInside];
+            objc_setAssociatedObject(btn, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+            [buttonsRow addSubview:btn];
+        }
+        [panel addSubview:buttonsRow];
+
+        UIView *resizeHandle = [[UIView alloc] initWithFrame:CGRectZero];
+        resizeHandle.tag = 9103;
+        resizeHandle.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.25];
+        resizeHandle.layer.cornerRadius = 4;
+        objc_setAssociatedObject(resizeHandle, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        UIPanGestureRecognizer *resizePan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(lensResizePan:)];
+        [resizeHandle addGestureRecognizer:resizePan];
+        [panel addSubview:resizeHandle];
+
+        self.lensPanelView = panel;
+        self.lensPanelUserResized = NO;
+        [self lensLayoutPanelSubviewsAutoFit:YES];
+    }
+
+    if (self.lensPanelView.superview != window) {
+        [self.lensPanelView removeFromSuperview];
+        [window addSubview:self.lensPanelView];
+    }
+    [window bringSubviewToFront:self.lensPanelView];
+    self.lensPanelView.hidden = NO;
+}
+
+- (void)hideLensPanel {
+    if (self.lensPanelView) {
+        self.lensPanelView.hidden = YES;
+        [self.lensPanelView removeFromSuperview];
+    }
+}
+
+- (void)updateLensPanelWithSource:(NSString *)source translated:(NSString *)translated autoFit:(BOOL)autoFit {
+    UIWindow *window = self.attachedWindow ?: TOActiveWindow();
+    if (!window) return;
+    [self ensureLensPanelInWindow:window];
+
+    self.lensCurrentSourceText = source ?: @"";
+    self.lensCurrentTranslatedText = translated ?: @"";
+    self.lensOriginalTextView.text = self.lensCurrentSourceText;
+    self.lensTranslatedTextView.text = self.lensCurrentTranslatedText;
+    self.lensStatusLabel.text = TOUIString(@"تم التحديث");
+    [self lensLayoutPanelSubviewsAutoFit:autoFit];
+}
+
+- (void)startLensScanFromCurrentButtonPosition {
+    UIWindow *window = self.attachedWindow ?: TOActiveWindow();
+    if (!window || !self.floatingButton) return;
+    [self requestLensTranslationAtPoint:self.floatingButton.center inWindow:window force:YES];
+}
+
+- (void)requestLensTranslationAtPoint:(CGPoint)point inWindow:(UIWindow *)window force:(BOOL)force {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    if (m.translationTapMode != TOTranslationTapModeLens || !self.lensModeEnabled || !window) return;
+
+    NSTimeInterval now = CACurrentMediaTime();
+    if (!force && (now - self.lensLastScanTime) < 0.26) return;
+
+    if (self.lensScanInFlight) {
+        self.lensPendingScan = YES;
+        self.lensPendingPoint = point;
+        return;
+    }
+
+    self.lensLastScanTime = now;
+    self.lensScanInFlight = YES;
+    NSUInteger token = ++self.lensScanGeneration;
+
+    [self ensureLensPanelInWindow:window];
+    self.lensStatusLabel.text = TOUIString(@"جارٍ التقاط الصفحة وتحليلها...");
+
+    NSMutableArray<UIView *> *excluded = [NSMutableArray array];
+    if (self.floatingButton.superview == window) [excluded addObject:self.floatingButton];
+    if (self.lensPanelView.superview == window) [excluded addObject:self.lensPanelView];
+
+    UIImage *image = [[TOPageOCRController shared] captureScreenshot:window excludingViews:excluded];
+    if (!image || !image.CGImage) {
+        self.lensScanInFlight = NO;
+        self.lensStatusLabel.text = TOUIString(@"لا يوجد نص مباشر لتحريره الآن");
+        return;
+    }
+
+    CGFloat regionW = MIN(window.bounds.size.width * 0.56, 320.0);
+    CGFloat regionH = MIN(window.bounds.size.height * 0.28, 220.0);
+    CGRect region = CGRectMake(point.x - (regionW * 0.5), point.y - (regionH * 0.5), regionW, regionH);
+    region = CGRectIntersection(region, CGRectMake(0, 0, image.size.width, image.size.height));
+    if (CGRectIsEmpty(region) || region.size.width < 6 || region.size.height < 6) {
+        self.lensScanInFlight = NO;
+        self.lensStatusLabel.text = TOUIString(@"لا يوجد نص مباشر لتحريره الآن");
+        return;
+    }
+
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_USER_INITIATED, 0), ^{
+        __block NSString *sourceText = @"";
+        if (@available(iOS 13.0, *)) {
+            CGFloat scaleX = (CGFloat)CGImageGetWidth(image.CGImage) / image.size.width;
+            CGFloat scaleY = (CGFloat)CGImageGetHeight(image.CGImage) / image.size.height;
+            CGRect pxRect = CGRectIntegral(CGRectMake(region.origin.x * scaleX, region.origin.y * scaleY, region.size.width * scaleX, region.size.height * scaleY));
+            CGImageRef cropped = CGImageCreateWithImageInRect(image.CGImage, pxRect);
+            if (cropped) {
+                VNRecognizeTextRequest *request = [[VNRecognizeTextRequest alloc] init];
+                request.recognitionLevel = VNRequestTextRecognitionLevelFast;
+                request.usesLanguageCorrection = YES;
+                request.minimumTextHeight = 0.012;
+
+                NSError *err = nil;
+                VNImageRequestHandler *handler = [[VNImageRequestHandler alloc] initWithCGImage:cropped options:@{}];
+                [handler performRequests:@[request] error:&err];
+                if (!err) {
+                    NSArray<VNRecognizedTextObservation *> *obs = request.results;
+                    if ([obs isKindOfClass:[NSArray class]] && obs.count > 0) {
+                        NSArray<VNRecognizedTextObservation *> *sorted = [obs sortedArrayUsingComparator:^NSComparisonResult(VNRecognizedTextObservation *a, VNRecognizedTextObservation *b) {
+                            CGFloat ay = CGRectGetMaxY(a.boundingBox);
+                            CGFloat by = CGRectGetMaxY(b.boundingBox);
+                            if (fabs(ay - by) > 0.04) return (ay > by) ? NSOrderedAscending : NSOrderedDescending;
+                            CGFloat ax = CGRectGetMinX(a.boundingBox);
+                            CGFloat bx = CGRectGetMinX(b.boundingBox);
+                            return (ax < bx) ? NSOrderedAscending : NSOrderedDescending;
+                        }];
+
+                        NSMutableArray<NSString *> *lines = [NSMutableArray array];
+                        NSInteger cap = MIN((NSInteger)sorted.count, 6);
+                        for (NSInteger i = 0; i < cap; i++) {
+                            VNRecognizedText *top = [[sorted[i] topCandidates:1] firstObject];
+                            NSString *s = [top.string stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                            if (s.length > 0) [lines addObject:s];
+                        }
+                        sourceText = [lines componentsJoinedByString:@"\n"];
+                    }
+                }
+                CGImageRelease(cropped);
+            }
+        }
+
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (token != self.lensScanGeneration) return;
+            self.lensScanInFlight = NO;
+
+            NSString *cleanSource = [sourceText stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+            if (cleanSource.length == 0) {
+                self.lensStatusLabel.text = TOUIString(@"لا يوجد نص مباشر لتحريره الآن");
+                if (self.lensPendingScan) {
+                    self.lensPendingScan = NO;
+                    [self requestLensTranslationAtPoint:self.lensPendingPoint inWindow:window force:YES];
+                }
+                return;
+            }
+
+            self.lensStatusLabel.text = TOUIString(@"جارٍ التقاط الصفحة وتحليلها...");
+            [[TOTranslationManager shared] translateOCRText:cleanSource completion:^(NSString *translatedText) {
+                if (token != self.lensScanGeneration) return;
+                NSString *cleanTranslated = [translatedText stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceAndNewlineCharacterSet];
+                if (cleanTranslated.length == 0) cleanTranslated = cleanSource;
+                [self updateLensPanelWithSource:cleanSource translated:cleanTranslated autoFit:YES];
+
+                if (self.lensPendingScan) {
+                    self.lensPendingScan = NO;
+                    [self requestLensTranslationAtPoint:self.lensPendingPoint inWindow:window force:YES];
+                }
+            }];
+        });
+    });
+}
+
+- (void)syncLensModeState {
+    TOTranslationManager *m = [TOTranslationManager shared];
+    BOOL shouldEnable = (m.translationTapMode == TOTranslationTapModeLens);
+
+    if (!shouldEnable) {
+        self.lensModeEnabled = NO;
+        self.lensPendingScan = NO;
+        self.lensScanInFlight = NO;
+        self.lensScanGeneration++;
+        [self hideLensPanel];
+        return;
+    }
+
+    self.lensModeEnabled = YES;
+    [self startLensScanFromCurrentButtonPosition];
+}
+
 - (void)translateCurrentPageWithToast:(BOOL)showToast {
     TOTranslationManager *m = [TOTranslationManager shared];
     NSTimeInterval now = CACurrentMediaTime();
@@ -3523,7 +3984,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                                                                    message:nil
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
 
-    NSArray<NSNumber *> *modes = @[@(TOTranslationTapModeNormal), @(TOTranslationTapModeManga), @(TOTranslationTapModeLive)];
+    NSArray<NSNumber *> *modes = @[@(TOTranslationTapModeNormal), @(TOTranslationTapModeManga), @(TOTranslationTapModeLive), @(TOTranslationTapModeLens)];
     for (NSNumber *modeNum in modes) {
         TOTranslationTapMode mode = (TOTranslationTapMode)modeNum.integerValue;
         NSString *label = TOTranslationModeLabel(mode);
@@ -3536,11 +3997,14 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             [m saveSettings];
             [self syncLiveTranslationLoopState];
             [self syncAppTranslationLoopState];
+            [self syncLensModeState];
 
             if (mode == TOTranslationTapModeManga) {
                 [self showToast:TOUIString(@"تم تفعيل نمط ترجمة المانجا")];
             } else if (mode == TOTranslationTapModeLive) {
                 [self showToast:TOUIString(@"تم اختيار نمط الترجمه المباشره")];
+            } else if (mode == TOTranslationTapModeLens) {
+                [self showToast:TOUIString(@"تم تفعيل نمط العدسه")];
             } else {
                 [self showToast:TOUIString(@"تم تفعيل ترجمة التطبيق")];
             }
@@ -4091,6 +4555,11 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                 [self showToast:TOUIString(@"تم إيقاف نمط الترجمه المباشره")];
             }
             break;
+        case TOTranslationTapModeLens:
+            self.lensModeEnabled = YES;
+            [self startLensScanFromCurrentButtonPosition];
+            [self showToast:TOUIString(@"اسحب الزر فوق النص لبدء ترجمة العدسه")];
+            break;
         case TOTranslationTapModeNormal:
         default:
             [self syncAppTranslationLoopState];
@@ -4125,6 +4594,12 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     CGPoint next = CGPointMake(self.floatingButton.center.x + t.x, self.floatingButton.center.y + t.y);
     self.floatingButton.center = [self clampedCenter:next inWindow:w];
     [g setTranslation:CGPointZero inView:w];
+
+    TOTranslationManager *m = [TOTranslationManager shared];
+    if (m.translationTapMode == TOTranslationTapModeLens && self.lensModeEnabled) {
+        BOOL force = (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled);
+        [self requestLensTranslationAtPoint:self.floatingButton.center inWindow:w force:force];
+    }
 
     if (g.state == UIGestureRecognizerStateEnded || g.state == UIGestureRecognizerStateCancelled) {
         [self animateSnapToNearestEdgeInWindow:w];
@@ -4182,6 +4657,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
     [self syncAppTranslationLoopState];
     [self syncLiveTranslationLoopState];
+    [self syncLensModeState];
 }
 
 @end
