@@ -1,6 +1,6 @@
 Package: com.wizardanime.translateoverlay
 Name: TranslateOverlay
-Version: 1.0.1
+Version: 1.0.1-32+debug
 Architecture: iphoneos-arm
 Description: Floating in-app translation overlay with OCR and adaptive text colors
 Maintainer: wizardanime-crypto
