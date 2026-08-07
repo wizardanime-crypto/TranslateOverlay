@@ -12,10 +12,10 @@
 
 static NSString * const kTOSourceLanguageKey = @"to_source_language";
 static NSString * const kTOTargetLanguageKey = @"to_target_language";
-static NSString * const kTOTranslationProviderKey = @"to_translation_provider";
 static NSString * const kTOButtonCenterXKey = @"to_button_center_x";
 static NSString * const kTOButtonCenterYKey = @"to_button_center_y";
 static NSString * const kTOTranslationCacheKey = @"to_translation_cache";
+static NSString * const kTOTranslationProviderKey = @"to_translation_provider";
 
 static NSString * const kTOOCRTextScaleKey = @"to_ocr_text_scale";
 static NSString * const kTOOCRTextAutoColorEnabledKey = @"to_ocr_text_auto_color_enabled";
@@ -37,6 +37,32 @@ static NSString * const kTOLiveOCRCorrectionsKey = @"to_live_ocr_corrections";
 static NSString * const kTOReplacementWordsEnabledKey = @"to_replacement_words_enabled";
 static NSString * const kTOReplacementWordsMapKey = @"to_replacement_words_map";
 
+static NSString * const kTOTranslationProviderGoogle = @"google_gtx";
+static NSString * const kTOTranslationProviderMyMemory = @"mymemory";
+static NSString * const kTOTranslationProviderLibre = @"libretranslate";
+
+static NSArray<NSDictionary<NSString *, NSString *> *> *TOTranslationProviders(void) {
+    static NSArray<NSDictionary<NSString *, NSString *> *> *providers;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        providers = @[
+            @{@"id": kTOTranslationProviderGoogle, @"name": @"Google Translate (GTX)"},
+            @{@"id": kTOTranslationProviderMyMemory, @"name": @"MyMemory"},
+            @{@"id": kTOTranslationProviderLibre, @"name": @"LibreTranslate"}
+        ];
+    });
+    return providers;
+}
+
+static NSString *TOTranslationProviderDisplayNameFromIdentifier(NSString *providerID) {
+    NSString *needle = providerID ?: @"";
+    for (NSDictionary<NSString *, NSString *> *item in TOTranslationProviders()) {
+        NSString *pid = item[@"id"];
+        if ([pid isEqualToString:needle]) return item[@"name"];
+    }
+    return @"Google Translate (GTX)";
+}
+
 @class TOTranslationManager;
 
 static BOOL TOShouldTranslateText(NSString *text) {
@@ -50,42 +76,6 @@ typedef NS_ENUM(NSInteger, TOTranslationTapMode) {
     TOTranslationTapModeManga = 1,
     TOTranslationTapModeLive = 2
 };
-
-typedef NS_ENUM(NSInteger, TOTranslationProvider) {
-    TOTranslationProviderCurrent = 0,
-    TOTranslationProviderYandex = 1,
-    TOTranslationProviderBaidu = 2,
-    TOTranslationProviderOpenSource = 3
-};
-
-static NSString *TOTranslationProviderCacheToken(TOTranslationProvider provider) {
-    return [NSString stringWithFormat:@"p%ld", (long)provider];
-}
-
-static NSString *TOTranslationProviderDisplayLabel(TOTranslationProvider provider) {
-    switch (provider) {
-        case TOTranslationProviderYandex:
-            return @"Yandex";
-        case TOTranslationProviderBaidu:
-            return @"Baidu";
-        case TOTranslationProviderOpenSource:
-            return @"Open Source";
-        case TOTranslationProviderCurrent:
-        default:
-            return @"السيرفر الحالي";
-    }
-}
-
-static NSString *TOProviderNormalizedLanguageCode(NSString *languageCode) {
-    NSString *code = (languageCode.length > 0) ? languageCode : @"auto";
-    if ([code isEqualToString:@"auto"]) return @"auto";
-    if ([code caseInsensitiveCompare:@"zh-CN"] == NSOrderedSame) return @"zh";
-    if ([code caseInsensitiveCompare:@"zh-TW"] == NSOrderedSame) return @"zh-TW";
-    if ([code caseInsensitiveCompare:@"jw"] == NSOrderedSame) return @"jv";
-    NSArray<NSString *> *parts = [code componentsSeparatedByString:@"-"];
-    NSString *base = parts.firstObject ?: code;
-    return base.length > 0 ? base : code;
-}
 
 static volatile NSInteger gTOTranslationTapModeSnapshot = TOTranslationTapModeNormal;
 static volatile BOOL gTOLiveTranslateEnabledSnapshot = NO;
@@ -449,7 +439,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 @interface TOTranslationManager : NSObject
 @property (nonatomic, copy) NSString *sourceLanguage;
 @property (nonatomic, copy) NSString *targetLanguage;
-@property (nonatomic, assign) NSInteger translationProvider;
+@property (nonatomic, copy) NSString *translationProvider;
 @property (nonatomic, strong) NSCache<NSString *, NSString *> *cache;
 @property (nonatomic, strong) NSMutableDictionary<NSString *, NSString *> *persistentCache;
 @property (nonatomic, strong) NSMutableSet<NSString *> *inFlightTranslationKeys;
@@ -482,21 +472,11 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 - (NSUInteger)clearAllLiveCorrections;
 - (UIColor *)ocrManualUIColor;
 - (UIColor *)ocrBackgroundUIColor;
-- (NSString *)translationProviderName;
-- (void)requestRawTranslationFromSource:(NSString *)source
-                                                                target:(NSString *)target
-                                                                    text:(NSString *)text
-                                                        completion:(void (^)(NSString *translated, BOOL isValidTranslation))completion;
-- (void)requestRawTranslationFromAttempts:(NSArray<NSDictionary<NSString *, NSString *> *> *)attempts
-                                                                         index:(NSInteger)index
-                                                                        source:(NSString *)source
-                                                                        target:(NSString *)target
-                                                                            text:(NSString *)text
-                                                                completion:(void (^)(NSString *translated, BOOL isValidTranslation))completion;
 - (void)translateText:(NSString *)text completion:(void (^)(NSString *translated))completion;
 - (void)translateOCRText:(NSString *)text completion:(void (^)(NSString *translated))completion;
 - (void)applyLiveCorrectionsFromItems:(NSArray<NSDictionary *> *)items;
 - (NSString *)applyReplacementWordsToText:(NSString *)text;
+- (NSString *)translationProviderDisplayName;
 @end
 
 @implementation TOTranslationManager
@@ -520,9 +500,15 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     self.sourceLanguage = [d stringForKey:kTOSourceLanguageKey] ?: @"auto";
     self.targetLanguage = [d stringForKey:kTOTargetLanguageKey] ?: @"ar";
-    NSInteger provider = [d integerForKey:kTOTranslationProviderKey];
-    if (provider < TOTranslationProviderCurrent || provider > TOTranslationProviderOpenSource) provider = TOTranslationProviderCurrent;
-    self.translationProvider = provider;
+    self.translationProvider = [d stringForKey:kTOTranslationProviderKey] ?: kTOTranslationProviderGoogle;
+    BOOL providerSupported = NO;
+    for (NSDictionary<NSString *, NSString *> *provider in TOTranslationProviders()) {
+        if ([provider[@"id"] isEqualToString:self.translationProvider]) {
+            providerSupported = YES;
+            break;
+        }
+    }
+    if (!providerSupported) self.translationProvider = kTOTranslationProviderGoogle;
 
     NSDictionary *stored = [d dictionaryForKey:kTOTranslationCacheKey];
     if ([stored isKindOfClass:[NSDictionary class]]) {
@@ -608,7 +594,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     NSUserDefaults *d = NSUserDefaults.standardUserDefaults;
     [d setObject:self.sourceLanguage ?: @"auto" forKey:kTOSourceLanguageKey];
     [d setObject:self.targetLanguage ?: @"ar" forKey:kTOTargetLanguageKey];
-    [d setInteger:self.translationProvider forKey:kTOTranslationProviderKey];
+    [d setObject:self.translationProvider ?: kTOTranslationProviderGoogle forKey:kTOTranslationProviderKey];
     NSDictionary *cacheSnapshot = nil;
     NSDictionary *replacementMapSnapshot = nil;
     @synchronized (self) {
@@ -670,7 +656,7 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 
     self.sourceLanguage = @"auto";
     self.targetLanguage = @"ar";
-    self.translationProvider = TOTranslationProviderCurrent;
+    self.translationProvider = kTOTranslationProviderGoogle;
     self.replacementWordsEnabled = NO;
 
     self.ocrTextScale = 1.0;
@@ -740,160 +726,6 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
     return [UIColor colorWithHue:h saturation:s brightness:b alpha:1.0];
 }
 
-- (NSString *)translationProviderName {
-    return TOTranslationProviderDisplayLabel((TOTranslationProvider)self.translationProvider);
-}
-
-- (void)requestGoogleGTXTranslationWithSource:(NSString *)source
-                                       target:(NSString *)target
-                                         text:(NSString *)text
-                                   completion:(void (^)(NSString *translated, BOOL isValidTranslation))completion {
-    NSString *q = [text stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet] ?: @"";
-    NSString *u = [NSString stringWithFormat:@"https://translate.googleapis.com/translate_a/single?client=gtx&sl=%@&tl=%@&dt=t&q=%@", source, target, q];
-    NSURL *url = [NSURL URLWithString:u];
-    if (!url) {
-        if (completion) completion(text, NO);
-        return;
-    }
-
-    [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, __unused NSURLResponse *response, NSError *error) {
-        NSString *result = text;
-        BOOL valid = NO;
-
-        if (!error && data.length > 0) {
-            id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-            if ([json isKindOfClass:[NSArray class]]) {
-                NSArray *top = (NSArray *)json;
-                if (top.count > 0 && [top[0] isKindOfClass:[NSArray class]]) {
-                    NSMutableString *combined = [NSMutableString string];
-                    for (id seg in (NSArray *)top[0]) {
-                        if ([seg isKindOfClass:[NSArray class]]) {
-                            NSArray *piece = (NSArray *)seg;
-                            if (piece.count > 0 && [piece[0] isKindOfClass:[NSString class]]) {
-                                [combined appendString:piece[0]];
-                            }
-                        }
-                    }
-                    if (combined.length > 0) {
-                        valid = YES;
-                        result = combined;
-                    }
-                }
-            }
-        }
-
-        if (completion) completion(result, valid);
-    }] resume];
-}
-
-- (void)requestSimplyTranslateWithEngine:(NSString *)engine
-                                  source:(NSString *)source
-                                  target:(NSString *)target
-                                    text:(NSString *)text
-                              completion:(void (^)(NSString *translated, BOOL isValidTranslation))completion {
-    NSString *from = TOProviderNormalizedLanguageCode(source);
-    NSString *to = TOProviderNormalizedLanguageCode(target);
-    NSString *q = [text stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet] ?: @"";
-    NSString *u = [NSString stringWithFormat:@"https://simplytranslate.org/api/translate?from=%@&to=%@&text=%@&engine=%@", from, to, q, engine];
-    NSURL *url = [NSURL URLWithString:u];
-    if (!url) {
-        if (completion) completion(text, NO);
-        return;
-    }
-
-    [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, __unused NSURLResponse *response, NSError *error) {
-        NSString *result = text;
-        BOOL valid = NO;
-
-        if (!error && data.length > 0) {
-            id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
-            if ([json isKindOfClass:[NSDictionary class]]) {
-                NSString *translated = ((NSDictionary *)json)[@"translated_text"];
-                if ([translated isKindOfClass:[NSString class]] && translated.length > 0) {
-                    valid = YES;
-                    result = translated;
-                }
-            }
-        }
-
-        if (completion) completion(result, valid);
-    }] resume];
-}
-
-- (void)requestRawTranslationFromSource:(NSString *)source
-                                target:(NSString *)target
-                                  text:(NSString *)text
-                            completion:(void (^)(NSString *translated, BOOL isValidTranslation))completion {
-    TOTranslationProvider provider = (TOTranslationProvider)self.translationProvider;
-    NSArray<NSDictionary<NSString *, NSString *> *> *attempts = nil;
-    switch (provider) {
-        case TOTranslationProviderYandex:
-            attempts = @[
-                @{@"kind": @"simply", @"engine": @"yandex"},
-                @{@"kind": @"simply", @"engine": @"google"},
-                @{@"kind": @"google"}
-            ];
-            break;
-        case TOTranslationProviderBaidu:
-            attempts = @[
-                @{@"kind": @"simply", @"engine": @"baidu"},
-                @{@"kind": @"simply", @"engine": @"google"},
-                @{@"kind": @"google"}
-            ];
-            break;
-        case TOTranslationProviderOpenSource:
-            attempts = @[
-                @{@"kind": @"simply", @"engine": @"libretranslate"},
-                @{@"kind": @"simply", @"engine": @"google"},
-                @{@"kind": @"google"}
-            ];
-            break;
-        case TOTranslationProviderCurrent:
-        default:
-            attempts = @[
-                @{@"kind": @"google"},
-                @{@"kind": @"simply", @"engine": @"google"}
-            ];
-            break;
-    }
-
-    [self requestRawTranslationFromAttempts:attempts index:0 source:source target:target text:text completion:completion];
-}
-
-- (void)requestRawTranslationFromAttempts:(NSArray<NSDictionary<NSString *, NSString *> *> *)attempts
-                                     index:(NSInteger)index
-                                    source:(NSString *)source
-                                    target:(NSString *)target
-                                      text:(NSString *)text
-                                completion:(void (^)(NSString *translated, BOOL isValidTranslation))completion {
-    if (index >= (NSInteger)attempts.count) {
-        if (completion) completion(text, NO);
-        return;
-    }
-
-    NSDictionary<NSString *, NSString *> *attempt = attempts[index];
-    NSString *kind = attempt[@"kind"];
-    if ([kind isEqualToString:@"google"]) {
-        [self requestGoogleGTXTranslationWithSource:source target:target text:text completion:^(NSString *translated, BOOL isValidTranslation) {
-            if (isValidTranslation) {
-                if (completion) completion(translated, YES);
-                return;
-            }
-            [self requestRawTranslationFromAttempts:attempts index:(index + 1) source:source target:target text:text completion:completion];
-        }];
-        return;
-    }
-
-    NSString *engine = attempt[@"engine"] ?: @"google";
-    [self requestSimplyTranslateWithEngine:engine source:source target:target text:text completion:^(NSString *translated, BOOL isValidTranslation) {
-        if (isValidTranslation) {
-            if (completion) completion(translated, YES);
-            return;
-        }
-        [self requestRawTranslationFromAttempts:attempts index:(index + 1) source:source target:target text:text completion:completion];
-    }];
-}
-
 - (NSString *)detectedLanguage:(NSString *)text {
 #if __has_include(<NaturalLanguage/NaturalLanguage.h>)
     if (@available(iOS 12.0, *)) {
@@ -921,8 +753,8 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
 
     NSString *source = self.sourceLanguage ?: @"auto";
     NSString *target = self.targetLanguage ?: @"ar";
-    NSString *providerToken = TOTranslationProviderCacheToken((TOTranslationProvider)self.translationProvider);
-    NSString *cacheKey = [NSString stringWithFormat:@"%@|%@|%@|%@", providerToken, source, target, preparedText];
+    NSString *provider = self.translationProvider ?: kTOTranslationProviderGoogle;
+    NSString *cacheKey = [NSString stringWithFormat:@"%@|%@|%@|%@", provider, source, target, preparedText];
     NSString *cached = [self.cache objectForKey:cacheKey];
     if (cached.length == 0) {
         @synchronized (self) {
@@ -956,16 +788,100 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         if (detected.length > 0) sl = detected;
     }
 
-    [self requestRawTranslationFromSource:sl target:target text:preparedText completion:^(NSString *translated, BOOL isValidTranslation) {
-        NSString *result = translated.length > 0 ? translated : inputText;
+    __block NSMutableURLRequest *request = nil;
+    BOOL usesGoogleLikeArrayResponse = NO;
+    if ([provider isEqualToString:kTOTranslationProviderMyMemory]) {
+        NSString *q = [preparedText stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet] ?: @"";
+        NSString *pair = [[NSString stringWithFormat:@"%@|%@", sl, target] stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet] ?: @"";
+        NSString *u = [NSString stringWithFormat:@"https://api.mymemory.translated.net/get?q=%@&langpair=%@", q, pair];
+        NSURL *url = [NSURL URLWithString:u];
+        if (url) request = [NSMutableURLRequest requestWithURL:url];
+    } else if ([provider isEqualToString:kTOTranslationProviderLibre]) {
+        NSURL *url = [NSURL URLWithString:@"https://translate.argosopentech.com/translate"];
+        if (url) {
+            request = [NSMutableURLRequest requestWithURL:url];
+            request.HTTPMethod = @"POST";
+            [request setValue:@"application/json" forHTTPHeaderField:@"Content-Type"];
+            NSDictionary *payload = @{
+                @"q": preparedText,
+                @"source": sl,
+                @"target": target,
+                @"format": @"text"
+            };
+            NSData *body = [NSJSONSerialization dataWithJSONObject:payload options:0 error:nil];
+            if (body.length > 0) request.HTTPBody = body;
+        }
+    } else {
+        usesGoogleLikeArrayResponse = YES;
+        NSString *q = [preparedText stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet] ?: @"";
+        NSString *u = [NSString stringWithFormat:@"https://translate.googleapis.com/translate_a/single?client=gtx&sl=%@&tl=%@&dt=t&q=%@", sl, target, q];
+        NSURL *url = [NSURL URLWithString:u];
+        if (url) request = [NSMutableURLRequest requestWithURL:url];
+    }
+
+    if (!request.URL) {
+        @synchronized (self) {
+            [self.inFlightTranslationKeys removeObject:cacheKey];
+        }
+        if (completion) completion(inputText);
+        return;
+    }
+
+    request.timeoutInterval = 9.0;
+    [[[NSURLSession sharedSession] dataTaskWithRequest:request completionHandler:^(NSData *data, NSURLResponse *response, NSError *error) {
+        NSString *result = inputText;
+        BOOL didGetValidTranslationPayload = NO;
+        if (!error && data.length > 0) {
+            id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            if (usesGoogleLikeArrayResponse) {
+                if ([json isKindOfClass:[NSArray class]]) {
+                    NSArray *top = (NSArray *)json;
+                    if (top.count > 0 && [top[0] isKindOfClass:[NSArray class]]) {
+                        NSMutableString *combined = [NSMutableString string];
+                        for (id seg in (NSArray *)top[0]) {
+                            if ([seg isKindOfClass:[NSArray class]]) {
+                                NSArray *piece = (NSArray *)seg;
+                                if (piece.count > 0 && [piece[0] isKindOfClass:[NSString class]]) {
+                                    [combined appendString:piece[0]];
+                                }
+                            }
+                        }
+                        if (combined.length > 0) {
+                            didGetValidTranslationPayload = YES;
+                            result = combined;
+                        }
+                    }
+                }
+            } else if ([provider isEqualToString:kTOTranslationProviderMyMemory]) {
+                if ([json isKindOfClass:[NSDictionary class]]) {
+                    NSDictionary *obj = (NSDictionary *)json;
+                    NSDictionary *responseData = [obj[@"responseData"] isKindOfClass:[NSDictionary class]] ? obj[@"responseData"] : nil;
+                    NSString *translatedText = [responseData[@"translatedText"] isKindOfClass:[NSString class]] ? responseData[@"translatedText"] : nil;
+                    if (translatedText.length > 0) {
+                        didGetValidTranslationPayload = YES;
+                        result = translatedText;
+                    }
+                }
+            } else if ([provider isEqualToString:kTOTranslationProviderLibre]) {
+                if ([json isKindOfClass:[NSDictionary class]]) {
+                    NSDictionary *obj = (NSDictionary *)json;
+                    NSString *translatedText = [obj[@"translatedText"] isKindOfClass:[NSString class]] ? obj[@"translatedText"] : nil;
+                    if (translatedText.length > 0) {
+                        didGetValidTranslationPayload = YES;
+                        result = translatedText;
+                    }
+                }
+            }
+        }
+
         NSString *finalResult = result;
-        if (isValidTranslation) {
+        if (didGetValidTranslationPayload) {
             NSString *processed = [self applyReplacementWordsToText:result];
             if (processed.length > 0) finalResult = processed;
         }
 
         // Cache only validated translation payloads; avoid poisoning cache with original text on network/parse failures.
-        if (isValidTranslation && finalResult.length > 0) {
+        if (didGetValidTranslationPayload && finalResult.length > 0) {
             [self.cache setObject:finalResult forKey:cacheKey];
             @synchronized (self) {
                 self.persistentCache[cacheKey] = finalResult;
@@ -984,7 +900,11 @@ static CGFloat TOColorDistance(CGFloat r1, CGFloat g1, CGFloat b1, CGFloat r2, C
         dispatch_async(dispatch_get_main_queue(), ^{
             if (completion) completion(finalResult);
         });
-    }];
+    }] resume];
+}
+
+- (NSString *)translationProviderDisplayName {
+    return TOTranslationProviderDisplayNameFromIdentifier(self.translationProvider ?: kTOTranslationProviderGoogle);
 }
 
 - (void)translateOCRText:(NSString *)text completion:(void (^)(NSString *translated))completion {
@@ -1098,8 +1018,7 @@ static NSString *TOUIString(NSString *text) {
     NSString *target = m.targetLanguage ?: @"ar";
     if ([target isEqualToString:@"ar"]) return text;
 
-    NSString *providerToken = TOTranslationProviderCacheToken((TOTranslationProvider)m.translationProvider);
-    NSString *key = [NSString stringWithFormat:@"%@|ar|%@|%@", providerToken, target, text];
+    NSString *key = [NSString stringWithFormat:@"ar|%@|%@", target, text];
     NSString *cached = [m.cache objectForKey:key];
     if (cached.length == 0) {
         @synchronized (m) {
@@ -1122,12 +1041,41 @@ static NSString *TOUIString(NSString *text) {
         inFlight[key] = @YES;
     }
 
-    [m requestRawTranslationFromSource:@"ar" target:target text:text completion:^(NSString *translated, BOOL isValidTranslation) {
-        NSString *candidate = translated.length > 0 ? translated : text;
-        NSString *finalTranslated = [m applyReplacementWordsToText:candidate];
-        if (finalTranslated.length == 0) finalTranslated = candidate;
+    NSString *q = [text stringByAddingPercentEncodingWithAllowedCharacters:NSCharacterSet.URLQueryAllowedCharacterSet] ?: @"";
+    NSString *u = [NSString stringWithFormat:@"https://translate.googleapis.com/translate_a/single?client=gtx&sl=ar&tl=%@&dt=t&q=%@", target, q];
+    NSURL *url = [NSURL URLWithString:u];
+    if (!url) {
+        @synchronized (inFlight) {
+            [inFlight removeObjectForKey:key];
+        }
+        return text;
+    }
 
-        if (isValidTranslation && finalTranslated.length > 0) {
+    [[[NSURLSession sharedSession] dataTaskWithURL:url completionHandler:^(NSData *data, __unused NSURLResponse *response, NSError *error) {
+        NSString *translated = text;
+        if (!error && data.length > 0) {
+            id json = [NSJSONSerialization JSONObjectWithData:data options:0 error:nil];
+            if ([json isKindOfClass:[NSArray class]]) {
+                NSArray *top = (NSArray *)json;
+                if (top.count > 0 && [top[0] isKindOfClass:[NSArray class]]) {
+                    NSMutableString *combined = [NSMutableString string];
+                    for (id seg in (NSArray *)top[0]) {
+                        if ([seg isKindOfClass:[NSArray class]]) {
+                            NSArray *piece = (NSArray *)seg;
+                            if (piece.count > 0 && [piece[0] isKindOfClass:[NSString class]]) {
+                                [combined appendString:piece[0]];
+                            }
+                        }
+                    }
+                    if (combined.length > 0) translated = combined;
+                }
+            }
+        }
+
+        NSString *finalTranslated = [m applyReplacementWordsToText:translated];
+        if (finalTranslated.length == 0) finalTranslated = translated;
+
+        if (finalTranslated.length > 0) {
             [m.cache setObject:finalTranslated forKey:key];
             @synchronized (m) {
                 m.persistentCache[key] = finalTranslated;
@@ -1142,7 +1090,7 @@ static NSString *TOUIString(NSString *text) {
         @synchronized (inFlight) {
             [inFlight removeObjectForKey:key];
         }
-    }];
+    }] resume];
 
     return text;
 }
@@ -1158,8 +1106,6 @@ static void TOWarmupUILocalization(void) {
         phrases = @[
             @"إعدادات الترجمة", @"الترجمه من و إلى", @"إعدادات OCR", @"أخرى", @"صفحة المطور",
             @"الترجمه من", @"الترجمة إلى", @"اختيار لغة المصدر", @"اختيار لغة الهدف", @"إعدادات مظهر الترجمة", @"حجم النص Aa",
-            @"سيرفر الترجمة", @"اختيار سيرفر الترجمة", @"تم تغيير سيرفر الترجمة",
-            @"السيرفر الحالي", @"Yandex", @"Baidu", @"Open Source",
             @"نمط الترجمه", @"ترجمة التطبيق", @"زر نمط ترجمة المانجا", @"زر نمط الترجمه المباشره",
             @"تم تفعيل نمط الترجمه المباشره", @"تم إيقاف نمط الترجمه المباشره", @"تم تفعيل نمط ترجمة المانجا", @"تم تفعيل ترجمة التطبيق",
             @"توسيط النص", @"ميزة تحرير النص", @"نمط ترجمة المانجا",
@@ -1178,13 +1124,14 @@ static void TOWarmupUILocalization(void) {
             @"تحديد الكل للحذف", @"تأكيد", @"سيتم حذف جميع الكلمات البديله", @"حذف", @"تم حذف جميع الكلمات البديله",
             @"تأكيد الحذف", @"هل أنت متأكد من حذف هذه الكلمة؟", @"نعم", @"لا",
             @"مسح الذاكرة المؤقته", @"تم مسح الذاكرة المؤقته", @"هل تريد مسح الذاكرة المؤقته؟",
-            @"استعادة ضبط المصنع", @"تمت استعادة ضبط المصنع", @"هل أنت متأكد من استعادة ضبط المصنع؟ سيتم حذف كل البيانات المخزنة."
+            @"استعادة ضبط المصنع", @"تمت استعادة ضبط المصنع", @"هل أنت متأكد من استعادة ضبط المصنع؟ سيتم حذف كل البيانات المخزنة.",
+            @"مزودي خدمة الترجمة", @"مزود الترجمة", @"اختر مزود الترجمة",
+            @"Google Translate (GTX)", @"MyMemory", @"LibreTranslate", @"تم تغيير مزود الترجمة"
         ];
     });
 
     for (NSString *text in phrases) {
-        NSString *providerToken = TOTranslationProviderCacheToken((TOTranslationProvider)m.translationProvider);
-        NSString *key = [NSString stringWithFormat:@"%@|ar|%@|%@", providerToken, target, text];
+        NSString *key = [NSString stringWithFormat:@"ar|%@|%@", target, text];
         BOOL hasCached = ([m.cache objectForKey:key] != nil);
         if (!hasCached) {
             @synchronized (m) {
@@ -3094,8 +3041,8 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)scheduleAppTranslationBurst;
 - (void)showOCRAppearanceSettings;
 - (void)showOCRTextSizePicker;
-- (void)showLanguagePicker:(BOOL)isSource;
 - (void)showTranslationProviderSettings;
+- (void)showLanguagePicker:(BOOL)isSource;
 - (void)openDeveloperPage;
 - (NSArray<NSDictionary *> *)colorStops;
 - (NSDictionary *)colorStopForNormalized:(CGFloat)normalized;
@@ -3370,16 +3317,16 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
     UIView *translationCard = [self sectionCardWithTitle:@"إعدادات الترجمة" y:92 height:182];
     [translationCard addSubview:[self sectionButtonWithTitle:@"الترجمه من" y:44 action:@selector(sourcePressed)]];
     [translationCard addSubview:[self sectionButtonWithTitle:@"الترجمة إلى" y:88 action:@selector(targetPressed)]];
-    [translationCard addSubview:[self sectionButtonWithTitle:@"سيرفر الترجمة" y:132 action:@selector(providerPressed)]];
+    [translationCard addSubview:[self sectionButtonWithTitle:@"مزودي خدمة الترجمة" y:132 action:@selector(providerPressed)]];
     [self.view addSubview:translationCard];
 
-    UIView *ocrCard = [self sectionCardWithTitle:@"إعدادات OCR" y:286 height:182];
+    UIView *ocrCard = [self sectionCardWithTitle:@"إعدادات OCR" y:242 height:182];
     [ocrCard addSubview:[self sectionButtonWithTitle:@"ترجمة الصفحة OCR" y:44 action:@selector(startOCRPressed)]];
     [ocrCard addSubview:[self sectionButtonWithTitle:@"إعدادات مظهر الترجمة" y:88 action:@selector(appearancePressed)]];
     [ocrCard addSubview:[self sectionButtonWithTitle:@"حجم النص Aa" y:132 action:@selector(sizePressed)]];
     [self.view addSubview:ocrCard];
 
-    UIView *otherCard = [self sectionCardWithTitle:@"أخرى" y:480 height:94];
+    UIView *otherCard = [self sectionCardWithTitle:@"أخرى" y:436 height:94];
     [otherCard addSubview:[self sectionButtonWithTitle:@"صفحة المطور" y:44 action:@selector(developerPressed)]];
     [self.view addSubview:otherCard];
 }
@@ -3752,44 +3699,6 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     }];
 }
 
-- (void)showTranslationProviderSettings {
-    TOWarmupUILocalization();
-    UIViewController *top = TOTopViewController();
-    if (!top) return;
-
-    TOTranslationManager *m = TOTranslationManager.shared;
-    UIAlertController *picker = [UIAlertController alertControllerWithTitle:TOUIString(@"اختيار سيرفر الترجمة")
-                                                                     message:nil
-                                                              preferredStyle:UIAlertControllerStyleActionSheet];
-
-    NSArray<NSNumber *> *providers = @[@(TOTranslationProviderCurrent), @(TOTranslationProviderYandex), @(TOTranslationProviderBaidu), @(TOTranslationProviderOpenSource)];
-    for (NSNumber *providerNum in providers) {
-        TOTranslationProvider provider = (TOTranslationProvider)providerNum.integerValue;
-        NSString *name = TOUIString(TOTranslationProviderDisplayLabel(provider));
-        NSString *title = (m.translationProvider == provider) ? [NSString stringWithFormat:@"%@ ✓", name] : name;
-        [picker addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
-            BOOL changed = (m.translationProvider != provider);
-            m.translationProvider = provider;
-            [m saveSettings];
-
-            if (changed) {
-                TOForceImmediateUILocalizationRefresh();
-                if (m.translationTapMode == TOTranslationTapModeLive && self.liveTranslateEnabled) {
-                    [self requestLiveOCROverlayRefresh];
-                }
-            }
-
-            [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"سيرفر الترجمة"), name]];
-        }]];
-    }
-
-    [picker addAction:[UIAlertAction actionWithTitle:TOUIString(@"إلغاء") style:UIAlertActionStyleCancel handler:nil]];
-    [self configurePopover:picker];
-    [top presentViewController:picker animated:YES completion:^{
-        TOTranslateControllerTree(picker);
-    }];
-}
-
 - (void)showOCRTextSizePicker {
     TOWarmupUILocalization();
     TOTranslationManager *m = TOTranslationManager.shared;
@@ -3800,6 +3709,39 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                         currentValue:m.ocrTextScale
                         showsPreview:NO
                    showsSizePreview:YES];
+}
+
+- (void)showTranslationProviderSettings {
+    TOWarmupUILocalization();
+    UIViewController *top = TOTopViewController();
+    if (!top) return;
+
+    TOTranslationManager *m = [TOTranslationManager shared];
+    UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TOUIString(@"مزودي خدمة الترجمة")
+                                                                   message:TOUIString(@"اختر مزود الترجمة")
+                                                            preferredStyle:UIAlertControllerStyleActionSheet];
+
+    for (NSDictionary<NSString *, NSString *> *provider in TOTranslationProviders()) {
+        NSString *providerID = provider[@"id"] ?: @"";
+        NSString *providerName = TOUIString(provider[@"name"] ?: @"");
+        BOOL selected = [m.translationProvider isEqualToString:providerID];
+        NSString *title = selected ? [NSString stringWithFormat:@"%@ ✓", providerName] : providerName;
+        [sheet addAction:[UIAlertAction actionWithTitle:title style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+            BOOL changed = ![m.translationProvider isEqualToString:providerID];
+            m.translationProvider = providerID;
+            if (changed) {
+                [m clearTranslationCachesOnly];
+                [self showToast:[NSString stringWithFormat:@"%@: %@", TOUIString(@"مزود الترجمة"), providerName]];
+            }
+            [m saveSettings];
+        }]];
+    }
+
+    [sheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
+    [self configurePopover:sheet];
+    [top presentViewController:sheet animated:YES completion:^{
+        TOTranslateControllerTree(sheet);
+    }];
 }
 
 - (void)showOCRAppearanceSettings {
@@ -4669,7 +4611,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     UIViewController *top = TOTopViewController();
     if (!top) return;
     TOTranslationManager *m = TOTranslationManager.shared;
-    NSString *msg = [NSString stringWithFormat:@"%@: %@\n%@: %@\n%@: %@", TOUIString(@"المصدر"), m.sourceLanguage, TOUIString(@"الهدف"), m.targetLanguage, TOUIString(@"سيرفر الترجمة"), TOUIString([m translationProviderName])];
+    NSString *msg = [NSString stringWithFormat:@"%@: %@\n%@: %@\n%@: %@", TOUIString(@"المصدر"), m.sourceLanguage, TOUIString(@"الهدف"), m.targetLanguage, TOUIString(@"مزود الترجمة"), TOUIString([m translationProviderDisplayName])];
     UIAlertController *sheet = [UIAlertController alertControllerWithTitle:TOUIString(@"إعدادات الترجمة")
                                                                    message:msg
                                                             preferredStyle:UIAlertControllerStyleActionSheet];
@@ -4682,16 +4624,15 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
                                                                      preferredStyle:UIAlertControllerStyleActionSheet];
         [langSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"الترجمه من") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showLanguagePicker:YES]; }]];
         [langSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"الترجمة إلى") style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) { [self showLanguagePicker:NO]; }]];
-        TOTranslationManager *innerM = TOTranslationManager.shared;
-        NSString *providerTitle = [NSString stringWithFormat:@"%@: %@", TOUIString(@"سيرفر الترجمة"), TOUIString([innerM translationProviderName])];
-        [langSheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", providerTitle] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *a) {
-            [self showTranslationProviderSettings];
-        }]];
         [langSheet addAction:[UIAlertAction actionWithTitle:TOUIString(@"رجوع") style:UIAlertActionStyleCancel handler:nil]];
         [self configurePopover:langSheet];
         [menuTop presentViewController:langSheet animated:YES completion:^{
             TOTranslateControllerTree(langSheet);
         }];
+    }]];
+
+    [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", TOUIString(@"مزودي خدمة الترجمة")] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
+        [self showTranslationProviderSettings];
     }]];
 
     [sheet addAction:[UIAlertAction actionWithTitle:[NSString stringWithFormat:@"%@ ▸", TOUIString(@"إعدادات الترجمة")] style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action) {
