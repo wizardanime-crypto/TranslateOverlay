@@ -1303,14 +1303,20 @@ static void TOTranslateViewTree(UIView *view) {
     if (!view || view.hidden || view.alpha <= 0.01) return;
     if (TOShouldSkipUITranslationForObject(view)) return;
 
+    TOApplyUnclippedTextLayoutToView(view);
+
     if ([view isKindOfClass:[UILabel class]]) {
         UILabel *label = (UILabel *)view;
         [[TOTranslationManager shared] translateText:label.text completion:^(NSString *translated) {
-            if (translated.length > 0) label.text = translated;
+            if (translated.length > 0) {
+                label.text = translated;
+                TOApplyUnclippedTextLayoutToView(label);
+            }
         }];
         if (label.attributedText.length > 0) {
             TOTranslateAndApplyAttributedTextToObject(label, label.attributedText, ^(NSAttributedString *translated) {
                 label.attributedText = translated;
+                TOApplyUnclippedTextLayoutToView(label);
             });
         }
     } else if ([view isKindOfClass:[UIButton class]]) {
@@ -1390,14 +1396,22 @@ static void TOTranslateSingleViewNode(UIView *view) {
     if (!view || view.hidden || view.alpha <= 0.01) return;
     if (TOShouldSkipUITranslationForObject(view)) return;
 
+    TOApplyUnclippedTextLayoutToView(view);
+
     if ([view isKindOfClass:[UILabel class]]) {
         UILabel *label = (UILabel *)view;
         TOTranslateAndApplyTextToObject(label, label.text, ^(NSString *translated) {
-            if (![label.text isEqualToString:translated]) [label setText:translated];
+            if (![label.text isEqualToString:translated]) {
+                [label setText:translated];
+                TOApplyUnclippedTextLayoutToView(label);
+            }
         });
         if (label.attributedText.length > 0) {
             TOTranslateAndApplyAttributedTextToObject(label, label.attributedText, ^(NSAttributedString *translated) {
-                if (![[label.attributedText string] isEqualToString:[translated string]]) [label setAttributedText:translated];
+                if (![[label.attributedText string] isEqualToString:[translated string]]) {
+                    [label setAttributedText:translated];
+                    TOApplyUnclippedTextLayoutToView(label);
+                }
             });
         }
     } else if ([view isKindOfClass:[UIButton class]]) {
@@ -1537,6 +1551,155 @@ static BOOL TOIsLikelyTextBearingView(UIView *view) {
            [view isKindOfClass:[UISearchBar class]];
 }
 
+static void TOConfigureCATextLayerTree(CALayer *layer) {
+    if (!layer) return;
+    if ([layer isKindOfClass:[CATextLayer class]]) {
+        CATextLayer *textLayer = (CATextLayer *)layer;
+        textLayer.wrapped = YES;
+        textLayer.truncationMode = kCATruncationNone;
+        textLayer.contentsScale = UIScreen.mainScreen.scale;
+    }
+    for (CALayer *sub in layer.sublayers) {
+        TOConfigureCATextLayerTree(sub);
+    }
+}
+
+static void TORelaxFixedHeightConstraintsForView(UIView *view) {
+    if (!view) return;
+
+    for (NSLayoutConstraint *constraint in view.constraints) {
+        BOOL ownFixedHeight = constraint.isActive &&
+                              constraint.firstItem == view &&
+                              constraint.firstAttribute == NSLayoutAttributeHeight &&
+                              constraint.secondItem == nil &&
+                              constraint.relation == NSLayoutRelationEqual;
+        if (ownFixedHeight && constraint.priority > UILayoutPriorityDefaultLow) {
+            constraint.priority = UILayoutPriorityDefaultLow;
+        }
+    }
+
+    UIView *superview = view.superview;
+    for (NSLayoutConstraint *constraint in superview.constraints) {
+        BOOL firstIsHeight = (constraint.firstItem == view && constraint.firstAttribute == NSLayoutAttributeHeight);
+        BOOL secondIsHeight = (constraint.secondItem == view && constraint.secondAttribute == NSLayoutAttributeHeight);
+        BOOL fixedHeight = constraint.isActive && (firstIsHeight || secondIsHeight) && constraint.relation == NSLayoutRelationEqual;
+        if (fixedHeight && constraint.priority > UILayoutPriorityDefaultLow) {
+            constraint.priority = UILayoutPriorityDefaultLow;
+        }
+    }
+}
+
+static void TODisableVerticalClippingChain(UIView *view) {
+    UIView *current = view;
+    NSInteger depth = 0;
+    while (current && depth < 7) {
+        current.clipsToBounds = NO;
+        current.layer.masksToBounds = NO;
+        current = current.superview;
+        depth++;
+    }
+}
+
+static void TORefreshViewLayoutChain(UIView *view) {
+    UIView *current = view;
+    NSInteger depth = 0;
+    while (current && depth < 6) {
+        [current setNeedsLayout];
+        [current layoutIfNeeded];
+        current = current.superview;
+        depth++;
+    }
+}
+
+static void TOConfigureUnclippedMultilineLabel(UILabel *label) {
+    if (!label) return;
+
+    label.numberOfLines = 0;
+    label.lineBreakMode = NSLineBreakByWordWrapping;
+    label.adjustsFontSizeToFitWidth = NO;
+    label.minimumScaleFactor = 1.0;
+    [label setContentCompressionResistancePriority:UILayoutPriorityRequired forAxis:UILayoutConstraintAxisVertical];
+    [label setContentHuggingPriority:UILayoutPriorityDefaultLow forAxis:UILayoutConstraintAxisVertical];
+
+    CGFloat targetWidth = CGRectGetWidth(label.bounds);
+    if (targetWidth <= 1.0) targetWidth = CGRectGetWidth(label.frame);
+    if (targetWidth > 1.0) label.preferredMaxLayoutWidth = targetWidth;
+
+    TORelaxFixedHeightConstraintsForView(label);
+    TODisableVerticalClippingChain(label);
+
+    if (targetWidth > 1.0 && label.text.length > 0) {
+        NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
+        paragraph.alignment = label.textAlignment;
+        paragraph.lineBreakMode = NSLineBreakByWordWrapping;
+
+        NSDictionary *attrs = @{
+            NSFontAttributeName: label.font ?: [UIFont systemFontOfSize:14],
+            NSParagraphStyleAttributeName: paragraph
+        };
+        CGRect measuredRect = [label.text boundingRectWithSize:CGSizeMake(targetWidth, CGFLOAT_MAX)
+                                                      options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                                   attributes:attrs
+                                                      context:nil];
+        CGFloat neededHeight = ceil(measuredRect.size.height);
+        if (neededHeight > 0.0 && (label.translatesAutoresizingMaskIntoConstraints || label.constraints.count == 0)) {
+            CGRect frame = label.frame;
+            frame.size.height = MAX(frame.size.height, neededHeight);
+            label.frame = frame;
+        }
+    }
+
+    if (targetWidth > 1.0 && label.attributedText.length > 0) {
+        CGRect attributedRect = [label.attributedText boundingRectWithSize:CGSizeMake(targetWidth, CGFLOAT_MAX)
+                                                                    options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                                                    context:nil];
+        CGFloat neededHeight = ceil(attributedRect.size.height);
+        if (neededHeight > 0.0 && (label.translatesAutoresizingMaskIntoConstraints || label.constraints.count == 0)) {
+            CGRect frame = label.frame;
+            frame.size.height = MAX(frame.size.height, neededHeight);
+            label.frame = frame;
+        }
+    }
+
+    TORefreshViewLayoutChain(label);
+}
+
+static void TOApplyUnclippedTextLayoutToView(UIView *view) {
+    if (!view) return;
+
+    if ([view isKindOfClass:[UILabel class]]) {
+        TOConfigureUnclippedMultilineLabel((UILabel *)view);
+    } else if ([view isKindOfClass:[UITextView class]]) {
+        UITextView *textView = (UITextView *)view;
+        textView.textContainer.lineBreakMode = NSLineBreakByWordWrapping;
+        textView.textContainer.maximumNumberOfLines = 0;
+        textView.textContainer.widthTracksTextView = YES;
+        textView.clipsToBounds = NO;
+        TODisableVerticalClippingChain(textView);
+        TORefreshViewLayoutChain(textView);
+    }
+
+    TOConfigureCATextLayerTree(view.layer);
+}
+
+static void TOApplyUnclippedTextLayoutRecursively(UIView *view) {
+    if (!view) return;
+    TOApplyUnclippedTextLayoutToView(view);
+    for (UIView *subview in view.subviews) {
+        TOApplyUnclippedTextLayoutRecursively(subview);
+    }
+}
+
+static void TORefreshVisibleWindowsTextLayouts(void) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        for (UIWindow *window in TOVisibleWindows()) {
+            TOApplyUnclippedTextLayoutRecursively(window);
+            [window setNeedsLayout];
+            [window layoutIfNeeded];
+        }
+    });
+}
+
 static CGFloat TOFittedFontSizeForText(NSString *text, CGRect rect, CGFloat minSize, CGFloat maxSize) {
     NSString *sample = text.length > 0 ? text : @"Aa";
     CGRect drawRect = CGRectInset(rect, 1.0, 0.0);
@@ -1569,12 +1732,6 @@ static CGFloat TOFittedFontSizeForText(NSString *text, CGRect rect, CGFloat minS
     return MAX(minSize, size);
 }
 
-static CGFloat TOHorizontalOverlapRatio(CGRect a, CGRect b) {
-    CGFloat overlap = MAX(0.0, MIN(CGRectGetMaxX(a), CGRectGetMaxX(b)) - MAX(CGRectGetMinX(a), CGRectGetMinX(b)));
-    CGFloat base = MAX(1.0, MIN(CGRectGetWidth(a), CGRectGetWidth(b)));
-    return overlap / base;
-}
-
 static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictionary *> *items) {
     if (!image || items.count == 0) return image;
 
@@ -1583,19 +1740,7 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     UIGraphicsBeginImageContextWithOptions(size, NO, image.scale);
     [image drawInRect:CGRectMake(0, 0, size.width, size.height)];
 
-    NSArray<NSDictionary *> *sortedItems = [items sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
-        CGRect ra = [a[@"rect"] CGRectValue];
-        CGRect rb = [b[@"rect"] CGRectValue];
-        CGFloat dy = CGRectGetMinY(ra) - CGRectGetMinY(rb);
-        if (fabs(dy) > 2.0) return (dy < 0) ? NSOrderedAscending : NSOrderedDescending;
-        CGFloat dx = CGRectGetMinX(ra) - CGRectGetMinX(rb);
-        return (dx < 0) ? NSOrderedAscending : NSOrderedDescending;
-    }];
-
-    NSMutableArray<NSValue *> *placedBackgroundRects = [NSMutableArray arrayWithCapacity:sortedItems.count];
-
-    for (NSInteger index = 0; index < (NSInteger)sortedItems.count; index++) {
-        NSDictionary *item = sortedItems[index];
+    for (NSDictionary *item in items) {
         NSString *text = item[@"translated"];
         NSValue *rectValue = item[@"rect"];
         if (text.length == 0 || !rectValue) continue;
@@ -1607,92 +1752,38 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         NSString *sourceText = item[@"source"] ?: text;
         CGFloat originalFit = TOFittedFontSizeForText(sourceText, rect, 8.0, 34.0);
         CGFloat fontSize = MAX(1.0, MIN(40.0, originalFit * scale));
-
-        CGRect textRect = CGRectInset(rect, 1.0, 0.0);
-        CGFloat maxBottom = size.height - 1.0;
-
-        for (NSInteger nextIndex = index + 1; nextIndex < (NSInteger)sortedItems.count; nextIndex++) {
-            NSValue *nextRectValue = sortedItems[nextIndex][@"rect"];
-            if (!nextRectValue) continue;
-            CGRect nextRect = [nextRectValue CGRectValue];
-            if (CGRectIsEmpty(nextRect)) continue;
-            if (CGRectGetMinY(nextRect) <= CGRectGetMinY(textRect) + 0.5) continue;
-
-            CGFloat overlapRatio = TOHorizontalOverlapRatio(textRect, nextRect);
-            CGFloat centerDistance = fabs(CGRectGetMidX(textRect) - CGRectGetMidX(nextRect));
-            BOOL relatedColumn = (overlapRatio >= 0.15) || (centerDistance <= MAX(24.0, CGRectGetWidth(textRect) * 0.55));
-            if (!relatedColumn) continue;
-
-            maxBottom = MIN(maxBottom, CGRectGetMinY(nextRect) - 2.0);
-        }
-
-        for (NSValue *placedValue in placedBackgroundRects) {
-            CGRect placedRect = [placedValue CGRectValue];
-            if (CGRectGetMinY(placedRect) <= CGRectGetMinY(textRect) + 0.5) continue;
-            if (TOHorizontalOverlapRatio(textRect, placedRect) < 0.12) continue;
-            maxBottom = MIN(maxBottom, CGRectGetMinY(placedRect) - 1.0);
-        }
-
-        CGFloat availableHeight = maxBottom - textRect.origin.y;
-        availableHeight = MAX(textRect.size.height, availableHeight);
-        availableHeight = MIN(availableHeight, size.height - textRect.origin.y - 1.0);
-        if (availableHeight < 2.0) availableHeight = textRect.size.height;
-
-        CGRect adaptiveTextRect = textRect;
-        adaptiveTextRect.size.height = availableHeight;
-
         UIColor *fg = nil;
         if (m.ocrAutoColorEnabled) fg = item[@"detectedColor"];
         if (!fg) fg = [m ocrManualUIColor];
 
-        UIColor *bgBase = nil;
-        if (m.ocrBackgroundAutoColorEnabled) bgBase = item[@"detectedBackgroundColor"];
-        if (!bgBase) bgBase = [m ocrBackgroundUIColor];
-
+        CGRect textRect = CGRectInset(rect, 1.0, 0.0);
         NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
         paragraph.alignment = m.ocrCenterTextEnabled ? NSTextAlignmentCenter : NSTextAlignmentNatural;
         paragraph.lineBreakMode = NSLineBreakByWordWrapping;
 
-        NSDictionary *attrs = nil;
-        CGSize measured = CGSizeZero;
-        for (NSInteger i = 0; i < 24; i++) {
-            UIFont *font = [UIFont boldSystemFontOfSize:fontSize];
-            attrs = @{
-                NSFontAttributeName: font,
-                NSForegroundColorAttributeName: fg,
-                NSParagraphStyleAttributeName: paragraph
-            };
-            measured = [text boundingRectWithSize:CGSizeMake(adaptiveTextRect.size.width, CGFLOAT_MAX)
-                                         options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                      attributes:attrs
-                                         context:nil].size;
-            if (measured.height <= adaptiveTextRect.size.height + 0.5) break;
-            fontSize = MAX(1.0, fontSize - 1.0);
-        }
+        UIFont *font = [UIFont boldSystemFontOfSize:fontSize];
+        NSDictionary *attrs = @{
+            NSFontAttributeName: font,
+            NSForegroundColorAttributeName: fg,
+            NSParagraphStyleAttributeName: paragraph
+        };
 
-        CGFloat measuredHeight = MAX(ceil(measured.height), textRect.size.height);
-        CGFloat containerHeight = MIN(adaptiveTextRect.size.height, measuredHeight + 2.0);
-        containerHeight = MAX(textRect.size.height, containerHeight);
+        CGFloat drawWidth = MAX(2.0, textRect.size.width);
+        CGSize measured = [text boundingRectWithSize:CGSizeMake(drawWidth, CGFLOAT_MAX)
+                                            options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                         attributes:attrs
+                                            context:nil].size;
 
-        CGRect containerRect = adaptiveTextRect;
-        containerRect.size.height = containerHeight;
+        CGFloat dynamicHeight = MAX(textRect.size.height, ceil(measured.height));
+        CGRect drawRect = CGRectMake(textRect.origin.x, textRect.origin.y, drawWidth, dynamicHeight);
 
-        CGRect bgRect = CGRectInset(containerRect, -2.0, -1.0);
-        bgRect = CGRectIntersection(bgRect, CGRectMake(0, 0, size.width, size.height));
-        if (!CGRectIsEmpty(bgRect)) {
-            UIColor *bgColor = [bgBase colorWithAlphaComponent:MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0)];
-            [bgColor setFill];
-            [[UIBezierPath bezierPathWithRoundedRect:bgRect cornerRadius:3.0] fill];
-            [placedBackgroundRects addObject:[NSValue valueWithCGRect:bgRect]];
-        }
-
-        CGRect drawRect = containerRect;
-        CGFloat drawHeight = MIN(containerRect.size.height, ceil(measured.height));
-        BOOL expandedVertically = containerRect.size.height > textRect.size.height + 0.5;
-        if (m.ocrCenterTextEnabled && !expandedVertically) {
-            drawRect.origin.y = containerRect.origin.y + MAX(0.0, (containerRect.size.height - drawHeight) * 0.5);
-        }
-        drawRect.size.height = MAX(drawHeight, 1.0);
+        UIColor *bgBase = nil;
+        if (m.ocrBackgroundAutoColorEnabled) bgBase = item[@"detectedBackgroundColor"];
+        if (!bgBase) bgBase = [m ocrBackgroundUIColor];
+        UIColor *bgColor = [bgBase colorWithAlphaComponent:MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0)];
+        CGRect bgRect = CGRectInset(drawRect, -2.0, -1.0);
+        [bgColor setFill];
+        [[UIBezierPath bezierPathWithRoundedRect:bgRect cornerRadius:3.0] fill];
 
         [text drawWithRect:drawRect
                   options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
@@ -3275,6 +3366,8 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
             CGFloat size = MAX(1.0, MIN(32.0, 16.0 * slider.value));
             self.activeSizePreviewLabel.font = [UIFont boldSystemFontOfSize:size];
             self.activeSizePreviewLabel.text = [NSString stringWithFormat:@"معاينة %.0f%%", slider.value * 100.0];
+            TOApplyUnclippedTextLayoutToView(self.activeSizePreviewLabel);
+            TORefreshVisibleWindowsTextLayouts();
             break;
         }
         default:
@@ -3645,7 +3738,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         panel.layer.cornerRadius = 12;
         panel.layer.borderColor = [[UIColor whiteColor] colorWithAlphaComponent:0.16].CGColor;
         panel.layer.borderWidth = 1.0;
-        panel.clipsToBounds = YES;
+        panel.clipsToBounds = NO;
         objc_setAssociatedObject(panel, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
         UIView *header = [[UIView alloc] initWithFrame:CGRectZero];
@@ -3793,6 +3886,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     self.lensTranslatedTextView.text = self.lensCurrentTranslatedText;
     self.lensStatusLabel.text = TOUIString(@"تم التحديث");
     [self lensLayoutPanelSubviewsAutoFit:autoFit];
+    TOApplyUnclippedTextLayoutToView(self.lensTranslatedTextView);
+    TOApplyUnclippedTextLayoutToView(self.lensOriginalTextView);
+    TOApplyUnclippedTextLayoutToView(self.lensStatusLabel);
 }
 
 - (void)startLensScanFromCurrentButtonPosition {
@@ -4870,9 +4966,11 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     }
 
     %orig(text);
+    TOApplyUnclippedTextLayoutToView(self);
     TOTranslateAndApplyTextToObject(self, text, ^(NSString *translated) {
         if (![self.text isEqualToString:translated]) {
             [self setText:translated];
+            TOApplyUnclippedTextLayoutToView(self);
         }
     });
 }
@@ -4884,9 +4982,11 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     }
 
     %orig(text);
+    TOApplyUnclippedTextLayoutToView(self);
     TOTranslateAndApplyAttributedTextToObject(self, text, ^(NSAttributedString *translated) {
         if (![[self.attributedText string] isEqualToString:[translated string]]) {
             [self setAttributedText:translated];
+            TOApplyUnclippedTextLayoutToView(self);
         }
     });
 }
@@ -5189,6 +5289,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 - (void)didMoveToWindow {
     %orig;
     if (self.window && TOIsLikelyTextBearingView(self) && TOIsUITranslationPipelineEnabled()) {
+        TOApplyUnclippedTextLayoutToView(self);
         TOTranslateSingleViewNode(self);
     }
 }
