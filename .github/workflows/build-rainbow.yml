@@ -1,0 +1,66 @@
+name: Build rainbow release
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix/no-text-truncation-541c7b4
+    paths-ignore:
+      - packages/**
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          ref: fix/no-text-truncation-541c7b4
+
+      - name: Prepare Theos
+        uses: Randomblock1/theos-action@v1
+
+      - name: Build package
+        run: make clean package FINALPACKAGE=1
+
+      - name: Prepare downloadable files
+        shell: bash
+        run: |
+          set -euo pipefail
+          short_sha="$(git rev-parse --short=7 HEAD)"
+          deb="$(find packages -maxdepth 1 -type f -name '*.deb' -printf '%T@ %p\n' | sort -nr | head -1 | cut -d' ' -f2-)"
+          test -n "$deb"
+
+          rm -rf build-release
+          mkdir -p build-release/extracted build-release/injection
+          dpkg-deb -x "$deb" build-release/extracted
+          dylib="$(find build-release/extracted -type f -name 'TranslateOverlay.dylib' -print -quit)"
+          test -n "$dylib"
+
+          cp "$dylib" "packages/TranslateOverlay-rainbow-${short_sha}.dylib"
+          cp "$deb" "packages/TranslateOverlay-rainbow-${short_sha}.deb"
+          cp "$dylib" build-release/injection/TranslateOverlay.dylib
+          cp TranslateOverlay.plist build-release/injection/TranslateOverlay.plist
+          (
+            cd build-release/injection
+            zip -9 "../../packages/TranslateOverlay-rainbow-${short_sha}-injection.zip" TranslateOverlay.dylib TranslateOverlay.plist
+          )
+          (
+            cd packages
+            zip -9 "TranslateOverlay-rainbow-${short_sha}.dylib.zip" "TranslateOverlay-rainbow-${short_sha}.dylib"
+          )
+
+      - name: Publish build files to branch
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add packages/TranslateOverlay-rainbow-*
+          git diff --cached --quiet && exit 0
+          git commit -m "Build rainbow release artifacts"
+          git push origin HEAD:fix/no-text-truncation-541c7b4
