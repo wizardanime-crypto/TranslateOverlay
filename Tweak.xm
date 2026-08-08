@@ -2726,6 +2726,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)hideLensPanel;
 - (void)startLensScanFromCurrentButtonPosition;
 - (void)requestLensTranslationAtPoint:(CGPoint)point inWindow:(UIWindow *)window force:(BOOL)force;
+- (void)applyRainbowAnimationToFloatingButtonIfNeeded;
 - (NSArray<NSDictionary *> *)colorStops;
 - (NSDictionary *)colorStopForNormalized:(CGFloat)normalized;
 - (CGFloat)normalizedValueForHue:(CGFloat)h saturation:(CGFloat)s brightness:(CGFloat)b;
@@ -3138,30 +3139,6 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     } completion:^(__unused BOOL finished) {
         [self savePosition];
     }];
-}
-
-- (void)applyRainbowAnimationToFloatingButtonIfNeeded {
-    if (!self.floatingButton) return;
-    static NSString * const kTORainbowAnimationKey = @"to.rainbow.button.background";
-    if ([self.floatingButton.layer animationForKey:kTORainbowAnimationKey]) return;
-
-    CAKeyframeAnimation *rainbow = [CAKeyframeAnimation animationWithKeyPath:@"backgroundColor"];
-    rainbow.values = @[
-        (__bridge id)[UIColor colorWithRed:1.00 green:0.20 blue:0.20 alpha:1.0].CGColor,
-        (__bridge id)[UIColor colorWithRed:1.00 green:0.55 blue:0.15 alpha:1.0].CGColor,
-        (__bridge id)[UIColor colorWithRed:1.00 green:0.82 blue:0.20 alpha:1.0].CGColor,
-        (__bridge id)[UIColor colorWithRed:0.20 green:0.82 blue:0.30 alpha:1.0].CGColor,
-        (__bridge id)[UIColor colorWithRed:0.18 green:0.62 blue:1.00 alpha:1.0].CGColor,
-        (__bridge id)[UIColor colorWithRed:0.45 green:0.35 blue:1.00 alpha:1.0].CGColor,
-        (__bridge id)[UIColor colorWithRed:0.85 green:0.25 blue:1.00 alpha:1.0].CGColor,
-        (__bridge id)[UIColor colorWithRed:1.00 green:0.20 blue:0.20 alpha:1.0].CGColor
-    ];
-    rainbow.keyTimes = @[@0.0, @0.14, @0.28, @0.42, @0.56, @0.70, @0.84, @1.0];
-    rainbow.duration = 4.0;
-    rainbow.repeatCount = HUGE_VALF;
-    rainbow.calculationMode = kCAAnimationLinear;
-    rainbow.removedOnCompletion = NO;
-    [self.floatingButton.layer addAnimation:rainbow forKey:kTORainbowAnimationKey];
 }
 
 - (void)configurePopover:(UIAlertController *)alert {
@@ -4926,9 +4903,9 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [w addSubview:self.floatingButton];
     }
 
-    [self applyRainbowAnimationToFloatingButtonIfNeeded];
     [w bringSubviewToFront:self.floatingButton];
     self.floatingButton.hidden = self.hiddenByDoubleTap;
+    [self applyRainbowAnimationToFloatingButtonIfNeeded];
     [self applySavedPosition];
 
     if (!self.tripleTap || self.tripleTap.view != w) {
@@ -4943,6 +4920,32 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     [self syncAppTranslationLoopState];
     [self syncLiveTranslationLoopState];
     [self syncLensModeState];
+}
+
+- (void)applyRainbowAnimationToFloatingButtonIfNeeded {
+    if (!self.floatingButton) return;
+
+    static NSString * const kTORainbowAnimationKey = @"to.rainbow.button.background";
+    if ([self.floatingButton.layer animationForKey:kTORainbowAnimationKey]) return;
+
+    CAKeyframeAnimation *rainbow = [CAKeyframeAnimation animationWithKeyPath:@"backgroundColor"];
+    rainbow.values = @[
+        (__bridge id)[UIColor colorWithRed:1.00 green:0.16 blue:0.22 alpha:1.0].CGColor,
+        (__bridge id)[UIColor colorWithRed:1.00 green:0.54 blue:0.12 alpha:1.0].CGColor,
+        (__bridge id)[UIColor colorWithRed:1.00 green:0.84 blue:0.18 alpha:1.0].CGColor,
+        (__bridge id)[UIColor colorWithRed:0.24 green:0.83 blue:0.28 alpha:1.0].CGColor,
+        (__bridge id)[UIColor colorWithRed:0.16 green:0.65 blue:1.00 alpha:1.0].CGColor,
+        (__bridge id)[UIColor colorWithRed:0.42 green:0.36 blue:1.00 alpha:1.0].CGColor,
+        (__bridge id)[UIColor colorWithRed:0.88 green:0.24 blue:1.00 alpha:1.0].CGColor,
+        (__bridge id)[UIColor colorWithRed:1.00 green:0.16 blue:0.22 alpha:1.0].CGColor
+    ];
+    rainbow.keyTimes = @[@0.0, @0.14, @0.28, @0.42, @0.56, @0.70, @0.84, @1.0];
+    rainbow.duration = 4.0;
+    rainbow.repeatCount = HUGE_VALF;
+    rainbow.calculationMode = kCAAnimationLinear;
+    rainbow.removedOnCompletion = NO;
+
+    [self.floatingButton.layer addAnimation:rainbow forKey:kTORainbowAnimationKey];
 }
 
 @end
