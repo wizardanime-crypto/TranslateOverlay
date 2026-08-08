@@ -62,7 +62,7 @@ static BOOL TOIsLiveModeSessionActiveFast(void) {
     return (gTOTranslationTapModeSnapshot == TOTranslationTapModeLive) && gTOLiveTranslateEnabledSnapshot;
 }
 
-static const BOOL kTODebugLayoutTracing = YES;
+static const BOOL kTODebugLayoutTracing = NO;
 
 static NSString *TOTranslationModeDebugName(void) {
     switch (gTOTranslationTapModeSnapshot) {
