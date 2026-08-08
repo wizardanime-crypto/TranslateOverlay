@@ -62,7 +62,7 @@ static BOOL TOIsLiveModeSessionActiveFast(void) {
     return (gTOTranslationTapModeSnapshot == TOTranslationTapModeLive) && gTOLiveTranslateEnabledSnapshot;
 }
 
-static const BOOL kTODebugLayoutTracing = NO;
+static const BOOL kTODebugLayoutTracing = YES;
 
 static NSString *TOTranslationModeDebugName(void) {
     switch (gTOTranslationTapModeSnapshot) {
@@ -3140,6 +3140,30 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     }];
 }
 
+- (void)applyRainbowAnimationToFloatingButtonIfNeeded {
+    if (!self.floatingButton) return;
+    static NSString * const kTORainbowAnimationKey = @"to.rainbow.button.background";
+    if ([self.floatingButton.layer animationForKey:kTORainbowAnimationKey]) return;
+
+    CAKeyframeAnimation *rainbow = [CAKeyframeAnimation animationWithKeyPath:@"backgroundColor"];
+    rainbow.values = @[
+        (__bridge id)[UIColor colorWithRed:1.00 green:0.20 blue:0.20 alpha:1.0].CGColor,
+        (__bridge id)[UIColor colorWithRed:1.00 green:0.55 blue:0.15 alpha:1.0].CGColor,
+        (__bridge id)[UIColor colorWithRed:1.00 green:0.82 blue:0.20 alpha:1.0].CGColor,
+        (__bridge id)[UIColor colorWithRed:0.20 green:0.82 blue:0.30 alpha:1.0].CGColor,
+        (__bridge id)[UIColor colorWithRed:0.18 green:0.62 blue:1.00 alpha:1.0].CGColor,
+        (__bridge id)[UIColor colorWithRed:0.45 green:0.35 blue:1.00 alpha:1.0].CGColor,
+        (__bridge id)[UIColor colorWithRed:0.85 green:0.25 blue:1.00 alpha:1.0].CGColor,
+        (__bridge id)[UIColor colorWithRed:1.00 green:0.20 blue:0.20 alpha:1.0].CGColor
+    ];
+    rainbow.keyTimes = @[@0.0, @0.14, @0.28, @0.42, @0.56, @0.70, @0.84, @1.0];
+    rainbow.duration = 4.0;
+    rainbow.repeatCount = HUGE_VALF;
+    rainbow.calculationMode = kCAAnimationLinear;
+    rainbow.removedOnCompletion = NO;
+    [self.floatingButton.layer addAnimation:rainbow forKey:kTORainbowAnimationKey];
+}
+
 - (void)configurePopover:(UIAlertController *)alert {
     UIPopoverPresentationController *p = alert.popoverPresentationController;
     if (!p) return;
@@ -4902,6 +4926,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         [w addSubview:self.floatingButton];
     }
 
+    [self applyRainbowAnimationToFloatingButtonIfNeeded];
     [w bringSubviewToFront:self.floatingButton];
     self.floatingButton.hidden = self.hiddenByDoubleTap;
     [self applySavedPosition];
