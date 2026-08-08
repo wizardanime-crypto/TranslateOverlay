@@ -62,6 +62,27 @@ static BOOL TOIsLiveModeSessionActiveFast(void) {
     return (gTOTranslationTapModeSnapshot == TOTranslationTapModeLive) && gTOLiveTranslateEnabledSnapshot;
 }
 
+static const BOOL kTODebugLayoutTracing = YES;
+
+static NSString *TOTranslationModeDebugName(void) {
+    switch (gTOTranslationTapModeSnapshot) {
+        case TOTranslationTapModeManga:
+            return @"manga";
+        case TOTranslationTapModeLive:
+            return @"direct-live";
+        case TOTranslationTapModeLens:
+            return @"lens";
+        case TOTranslationTapModeNormal:
+        default:
+            return @"app";
+    }
+}
+
+static void TODebugLayoutLog(NSString *scope, NSString *message) {
+    if (!kTODebugLayoutTracing) return;
+    NSLog(@"[TO][%@][%@] %@", TOTranslationModeDebugName(), scope ?: @"-", message ?: @"");
+}
+
 static NSString *TOPrepareOCRMultilineText(NSString *inputText) {
     if (inputText.length == 0) return @"";
 
@@ -242,7 +263,19 @@ static BOOL TOIsUITranslationPipelineEnabled(void) {
 static NSAttributedString *TORebuildAttributedString(NSAttributedString *source, NSString *translated) {
     if (translated.length == 0) return source;
     NSDictionary *attrs = nil;
-    if (source.length > 0) attrs = [source attributesAtIndex:0 effectiveRange:NULL];
+    if (source.length > 0) {
+        NSMutableDictionary *mutableAttrs = [[source attributesAtIndex:0 effectiveRange:NULL] mutableCopy] ?: [NSMutableDictionary dictionary];
+        NSMutableParagraphStyle *paragraph = nil;
+        id paragraphObject = mutableAttrs[NSParagraphStyleAttributeName];
+        if ([paragraphObject isKindOfClass:[NSParagraphStyle class]]) {
+            paragraph = [(NSParagraphStyle *)paragraphObject mutableCopy];
+        } else {
+            paragraph = [NSMutableParagraphStyle new];
+        }
+        paragraph.lineBreakMode = NSLineBreakByWordWrapping;
+        mutableAttrs[NSParagraphStyleAttributeName] = paragraph;
+        attrs = [mutableAttrs copy];
+    }
     return [[NSAttributedString alloc] initWithString:translated attributes:attrs];
 }
 
@@ -1306,6 +1339,7 @@ static void TOTranslateViewTree(UIView *view) {
     if ([view isKindOfClass:[UILabel class]]) {
         UILabel *label = (UILabel *)view;
         TOApplyMultilineLayoutToLabel(label);
+        TODebugLayoutLog(@"AppTree", [NSString stringWithFormat:@"UILabel textLen=%lu", (unsigned long)(label.text.length ?: label.attributedText.string.length)]);
         [[TOTranslationManager shared] translateText:label.text completion:^(NSString *translated) {
             if (translated.length > 0) {
                 label.text = translated;
@@ -1321,6 +1355,7 @@ static void TOTranslateViewTree(UIView *view) {
     } else if ([view isKindOfClass:[UIButton class]]) {
         UIButton *button = (UIButton *)view;
         if (button.titleLabel) TOApplyMultilineLayoutToLabel(button.titleLabel);
+        TODebugLayoutLog(@"AppTree", [NSString stringWithFormat:@"UIButton titleLen=%lu", (unsigned long)[[button titleForState:UIControlStateNormal] length]]);
         [[TOTranslationManager shared] translateText:[button titleForState:UIControlStateNormal] completion:^(NSString *translated) {
             if (translated.length > 0) {
                 [button setTitle:translated forState:UIControlStateNormal];
@@ -1592,10 +1627,12 @@ static void TOApplyMultilineLayoutToLabel(UILabel *label) {
         label.preferredMaxLayoutWidth = width;
         CGSize wanted = [label sizeThatFits:CGSizeMake(width, CGFLOAT_MAX)];
         CGFloat targetHeight = ceil(MAX(wanted.height, 1.0));
-        if (targetHeight > CGRectGetHeight(label.frame) + 0.5) {
+        CGFloat oldHeight = CGRectGetHeight(label.frame);
+        if (targetHeight > oldHeight + 0.5) {
             CGRect frame = label.frame;
             frame.size.height = targetHeight;
             label.frame = frame;
+            TODebugLayoutLog(@"UILabel", [NSString stringWithFormat:@"expanded %@ h %.1f -> %.1f textLen=%lu", NSStringFromClass(label.class), oldHeight, targetHeight, (unsigned long)(label.text.length ?: label.attributedText.string.length)]);
         }
     }
 
@@ -1690,9 +1727,13 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
                                              context:nil].size;
 
         CGRect drawRect = textRect;
+        CGFloat originalHeight = drawRect.size.height;
         drawRect.size.height = MAX(ceil(measured.height), textRect.size.height);
         if (CGRectGetMaxY(drawRect) > size.height - 1.0) {
             drawRect.size.height = MAX(1.0, (size.height - 1.0) - drawRect.origin.y);
+        }
+        if (drawRect.size.height > originalHeight + 0.5) {
+            TODebugLayoutLog(@"OCR", [NSString stringWithFormat:@"expanded box y=%.1f h %.1f -> %.1f textLen=%lu", drawRect.origin.y, originalHeight, drawRect.size.height, (unsigned long)text.length]);
         }
 
         CGRect bgRect = CGRectInset(CGRectUnion(rect, drawRect), -2.0, -1.0);
@@ -3613,6 +3654,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     CGFloat width = panel.bounds.size.width;
     CGFloat translatedFit = [self.lensTranslatedTextView sizeThatFits:CGSizeMake(MAX(80.0, width - 24.0), CGFLOAT_MAX)].height;
     CGFloat originalFit = [self.lensOriginalTextView sizeThatFits:CGSizeMake(MAX(80.0, width - 24.0), CGFLOAT_MAX)].height;
+    TODebugLayoutLog(@"Lens", [NSString stringWithFormat:@"panel %.1fx%.1f translatedFit=%.1f originalFit=%.1f autoFit=%@", panel.bounds.size.width, panel.bounds.size.height, translatedFit, originalFit, autoFit ? @"YES" : @"NO"]);
 
     if (autoFit && !self.lensPanelUserResized && window) {
         CGFloat wanted = 128.0 + MIN(360.0, translatedFit + originalFit);
@@ -3938,6 +3980,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
 - (void)requestLiveOCROverlayRefresh {
     TOTranslationManager *m = [TOTranslationManager shared];
+    TODebugLayoutLog(@"Direct", [NSString stringWithFormat:@"refresh requested enabled=%@ mode=%ld", self.liveTranslateEnabled ? @"YES" : @"NO", (long)m.translationTapMode]);
     if (m.translationTapMode != TOTranslationTapModeLive || !self.liveTranslateEnabled) {
         [self removeLiveOverlayIfNeeded];
         return;
