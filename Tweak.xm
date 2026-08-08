@@ -3554,8 +3554,10 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     UIView *resizeHandle = [panel viewWithTag:9103];
     UILabel *translatedLabel = (UILabel *)[panel viewWithTag:9104];
     UILabel *originalLabel = (UILabel *)[panel viewWithTag:9105];
+    UIButton *closeButton = (UIButton *)[panel viewWithTag:9106];
 
     header.frame = CGRectMake(0, 0, width, 34);
+    closeButton.frame = CGRectMake(width - 38, 3, 30, 28);
     buttonsRow.frame = CGRectMake(8, h - 38, width - 16, 30);
 
     CGFloat contentTop = CGRectGetMaxY(header.frame) + 4;
@@ -3606,19 +3608,27 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         self.lensStatusLabel = status;
 
         UIButton *close = [UIButton buttonWithType:UIButtonTypeSystem];
-        close.frame = CGRectMake(panel.bounds.size.width - 52, 4, 44, 26);
+        close.tag = 9106;
+        close.frame = CGRectMake(panel.bounds.size.width - 38, 3, 30, 28);
         close.autoresizingMask = UIViewAutoresizingFlexibleLeftMargin;
-        [close setTitle:@"x" forState:UIControlStateNormal];
+        if (@available(iOS 13.0, *)) {
+            UIImageSymbolConfiguration *configuration = [UIImageSymbolConfiguration configurationWithPointSize:14 weight:UIImageSymbolWeightBold];
+            [close setImage:[UIImage systemImageNamed:@"xmark" withConfiguration:configuration] forState:UIControlStateNormal];
+        } else {
+            [close setTitle:@"X" forState:UIControlStateNormal];
+        }
         [close setTitleColor:UIColor.whiteColor forState:UIControlStateNormal];
+        close.tintColor = UIColor.whiteColor;
         close.titleLabel.font = [UIFont boldSystemFontOfSize:16];
-        close.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.12];
-        close.layer.cornerRadius = 8;
+        close.backgroundColor = [[UIColor whiteColor] colorWithAlphaComponent:0.18];
+        close.layer.cornerRadius = 14;
         close.accessibilityLabel = TOUIString(@"إغلاق");
         [close addTarget:self action:@selector(lensClosePressed) forControlEvents:UIControlEventTouchUpInside];
         objc_setAssociatedObject(close, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
         [header addSubview:close];
 
         UIPanGestureRecognizer *headerPan = [[UIPanGestureRecognizer alloc] initWithTarget:self action:@selector(lensPanelPan:)];
+        headerPan.cancelsTouchesInView = NO;
         [header addGestureRecognizer:headerPan];
         [panel addSubview:header];
 
