@@ -1593,35 +1593,68 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         if (m.ocrAutoColorEnabled) fg = item[@"detectedColor"];
         if (!fg) fg = [m ocrManualUIColor];
 
-        CGRect bgRect = CGRectInset(rect, -2.0, -1.0);
-        UIColor *bgBase = nil;
-        if (m.ocrBackgroundAutoColorEnabled) bgBase = item[@"detectedBackgroundColor"];
-        if (!bgBase) bgBase = [m ocrBackgroundUIColor];
-        UIColor *bgColor = [bgBase colorWithAlphaComponent:MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0)];
-        [bgColor setFill];
-        [[UIBezierPath bezierPathWithRoundedRect:bgRect cornerRadius:3.0] fill];
-
         CGRect textRect = CGRectInset(rect, 1.0, 0.0);
         NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
         paragraph.alignment = m.ocrCenterTextEnabled ? NSTextAlignmentCenter : NSTextAlignmentNatural;
-        paragraph.lineBreakMode = NSLineBreakByWordWrapping;
+        paragraph.lineBreakMode = NSLineBreakByCharWrapping;
 
         NSDictionary *attrs = nil;
         CGSize measured = CGSizeZero;
-        for (NSInteger i = 0; i < 12; i++) {
+        CGFloat minFontSize = 7.0;
+        CGFloat expandedHeight = MAX(textRect.size.height, 2.0);
+        CGFloat maxExpandedHeight = MIN(size.height * 0.40, MAX(textRect.size.height * 4.0, textRect.size.height + 24.0));
+        for (NSInteger i = 0; i < 20; i++) {
             UIFont *font = [UIFont boldSystemFontOfSize:fontSize];
             attrs = @{
                 NSFontAttributeName: font,
                 NSForegroundColorAttributeName: fg,
                 NSParagraphStyleAttributeName: paragraph
             };
-            measured = [text boundingRectWithSize:textRect.size
+            measured = [text boundingRectWithSize:CGSizeMake(MAX(2.0, textRect.size.width), CGFLOAT_MAX)
                                          options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
                                       attributes:attrs
                                          context:nil].size;
-            if (measured.height <= textRect.size.height + 0.5) break;
-            fontSize = MAX(1.0, fontSize - 1.0);
+            CGFloat requiredHeight = ceil(measured.height);
+            if (requiredHeight <= expandedHeight + 0.5) break;
+
+            if (fontSize > minFontSize + 0.1) {
+                fontSize = MAX(minFontSize, fontSize - 1.0);
+                continue;
+            }
+
+            expandedHeight = MIN(maxExpandedHeight, requiredHeight);
+            break;
         }
+
+        if (measured.height > expandedHeight + 0.5 && expandedHeight < maxExpandedHeight) {
+            expandedHeight = MIN(maxExpandedHeight, ceil(measured.height));
+        }
+
+        expandedHeight = MAX(textRect.size.height, expandedHeight);
+
+        CGFloat backgroundInsetX = 2.0;
+        CGFloat backgroundInsetY = 1.0;
+        CGRect bgRect = CGRectMake(rect.origin.x - backgroundInsetX,
+                                   rect.origin.y - backgroundInsetY,
+                                   rect.size.width + (backgroundInsetX * 2.0),
+                                   expandedHeight + (backgroundInsetY * 2.0));
+
+        if (CGRectGetMaxY(bgRect) > size.height) {
+            bgRect.origin.y = MAX(0.0, size.height - bgRect.size.height);
+        }
+        if (bgRect.origin.y < 0.0) bgRect.origin.y = 0.0;
+
+        textRect = CGRectMake(rect.origin.x + 1.0,
+                              bgRect.origin.y + backgroundInsetY,
+                              MAX(2.0, rect.size.width - 2.0),
+                              MAX(2.0, bgRect.size.height - (backgroundInsetY * 2.0)));
+
+        UIColor *bgBase = nil;
+        if (m.ocrBackgroundAutoColorEnabled) bgBase = item[@"detectedBackgroundColor"];
+        if (!bgBase) bgBase = [m ocrBackgroundUIColor];
+        UIColor *bgColor = [bgBase colorWithAlphaComponent:MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0)];
+        [bgColor setFill];
+        [[UIBezierPath bezierPathWithRoundedRect:bgRect cornerRadius:3.0] fill];
 
         CGRect drawRect = textRect;
         if (m.ocrCenterTextEnabled) {
@@ -1630,10 +1663,14 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
             drawRect.size.height = textHeight;
         }
 
+        CGContextRef contextRef = UIGraphicsGetCurrentContext();
+        CGContextSaveGState(contextRef);
+        UIRectClip(textRect);
         [text drawWithRect:drawRect
-                  options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+                  options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
                attributes:attrs
                   context:nil];
+        CGContextRestoreGState(contextRef);
     }
 
     UIImage *rendered = UIGraphicsGetImageFromCurrentImageContext();
