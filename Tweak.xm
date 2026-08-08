@@ -1332,6 +1332,8 @@ static NSString *TOTranslationModeLabel(TOTranslationTapMode mode) {
     }
 }
 
+static void TOApplyMultilineLayoutToLabel(UILabel *label);
+
 static void TOTranslateViewTree(UIView *view) {
     if (!view || view.hidden || view.alpha <= 0.01) return;
     if (TOShouldSkipUITranslationForObject(view)) return;
