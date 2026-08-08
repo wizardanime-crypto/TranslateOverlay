@@ -1305,12 +1305,17 @@ static void TOTranslateViewTree(UIView *view) {
 
     if ([view isKindOfClass:[UILabel class]]) {
         UILabel *label = (UILabel *)view;
+        TOConfigureLabelForMultilineTranslation(label);
         [[TOTranslationManager shared] translateText:label.text completion:^(NSString *translated) {
-            if (translated.length > 0) label.text = translated;
+            if (translated.length > 0) {
+                label.text = translated;
+                TOConfigureLabelForMultilineTranslation(label);
+            }
         }];
         if (label.attributedText.length > 0) {
             TOTranslateAndApplyAttributedTextToObject(label, label.attributedText, ^(NSAttributedString *translated) {
                 label.attributedText = translated;
+                TOConfigureLabelForMultilineTranslation(label);
             });
         }
     } else if ([view isKindOfClass:[UIButton class]]) {
@@ -1345,12 +1350,17 @@ static void TOTranslateViewTree(UIView *view) {
         }
     } else if ([view isKindOfClass:[UITextView class]]) {
         UITextView *tv = (UITextView *)view;
+        TOConfigureTextViewForMultilineTranslation(tv);
         [[TOTranslationManager shared] translateText:tv.text completion:^(NSString *translated) {
-            if (translated.length > 0) tv.text = translated;
+            if (translated.length > 0) {
+                tv.text = translated;
+                TOConfigureTextViewForMultilineTranslation(tv);
+            }
         }];
         if (tv.attributedText.length > 0) {
             TOTranslateAndApplyAttributedTextToObject(tv, tv.attributedText, ^(NSAttributedString *translated) {
                 tv.attributedText = translated;
+                TOConfigureTextViewForMultilineTranslation(tv);
             });
         }
     } else if ([view isKindOfClass:[UISegmentedControl class]]) {
@@ -1392,12 +1402,19 @@ static void TOTranslateSingleViewNode(UIView *view) {
 
     if ([view isKindOfClass:[UILabel class]]) {
         UILabel *label = (UILabel *)view;
+        TOConfigureLabelForMultilineTranslation(label);
         TOTranslateAndApplyTextToObject(label, label.text, ^(NSString *translated) {
-            if (![label.text isEqualToString:translated]) [label setText:translated];
+            if (![label.text isEqualToString:translated]) {
+                [label setText:translated];
+                TOConfigureLabelForMultilineTranslation(label);
+            }
         });
         if (label.attributedText.length > 0) {
             TOTranslateAndApplyAttributedTextToObject(label, label.attributedText, ^(NSAttributedString *translated) {
-                if (![[label.attributedText string] isEqualToString:[translated string]]) [label setAttributedText:translated];
+                if (![[label.attributedText string] isEqualToString:[translated string]]) {
+                    [label setAttributedText:translated];
+                    TOConfigureLabelForMultilineTranslation(label);
+                }
             });
         }
     } else if ([view isKindOfClass:[UIButton class]]) {
@@ -1416,8 +1433,12 @@ static void TOTranslateSingleViewNode(UIView *view) {
         });
     } else if ([view isKindOfClass:[UITextView class]]) {
         UITextView *tv = (UITextView *)view;
+        TOConfigureTextViewForMultilineTranslation(tv);
         TOTranslateAndApplyTextToObject(tv, tv.text, ^(NSString *translated) {
-            if (![[tv text] isEqualToString:translated]) [tv setText:translated];
+            if (![[tv text] isEqualToString:translated]) {
+                [tv setText:translated];
+                TOConfigureTextViewForMultilineTranslation(tv);
+            }
         });
     }
 }
@@ -1537,6 +1558,70 @@ static BOOL TOIsLikelyTextBearingView(UIView *view) {
            [view isKindOfClass:[UISearchBar class]];
 }
 
+static void TORelaxFixedHeightConstraintsForView(UIView *view) {
+    if (!view) return;
+    for (NSLayoutConstraint *constraint in view.constraints) {
+        BOOL touchesView = (constraint.firstItem == view || constraint.secondItem == view);
+        if (!touchesView) continue;
+
+        BOOL isHeight = ((constraint.firstItem == view && constraint.firstAttribute == NSLayoutAttributeHeight) ||
+                         (constraint.secondItem == view && constraint.secondAttribute == NSLayoutAttributeHeight));
+        if (!isHeight) continue;
+
+        if (constraint.relation == NSLayoutRelationEqual && constraint.priority >= UILayoutPriorityDefaultHigh) {
+            constraint.priority = UILayoutPriorityDefaultLow;
+        }
+    }
+}
+
+static void TOConfigureLabelForMultilineTranslation(UILabel *label) {
+    if (!label || TOShouldSkipUITranslationForObject(label)) return;
+
+    label.numberOfLines = 0;
+    label.lineBreakMode = NSLineBreakByWordWrapping;
+    label.adjustsFontSizeToFitWidth = NO;
+    label.clipsToBounds = NO;
+    if (label.superview) label.superview.clipsToBounds = NO;
+
+    CGFloat width = CGRectGetWidth(label.bounds);
+    if (width < 2.0) width = CGRectGetWidth(label.frame);
+    if (width >= 2.0) label.preferredMaxLayoutWidth = width;
+
+    TORelaxFixedHeightConstraintsForView(label);
+    TORelaxFixedHeightConstraintsForView(label.superview);
+
+    if (label.translatesAutoresizingMaskIntoConstraints) {
+        CGFloat targetWidth = MAX(2.0, width);
+        CGSize fit = [label sizeThatFits:CGSizeMake(targetWidth, CGFLOAT_MAX)];
+        if (fit.height > 0.0) {
+            CGRect frame = label.frame;
+            frame.size.height = MAX(frame.size.height, ceil(fit.height));
+            label.frame = frame;
+        }
+    }
+
+    [label setNeedsLayout];
+    [label layoutIfNeeded];
+    [label.superview setNeedsLayout];
+    [label.superview layoutIfNeeded];
+}
+
+static void TOConfigureTextViewForMultilineTranslation(UITextView *textView) {
+    if (!textView || TOShouldSkipUITranslationForObject(textView)) return;
+    textView.textContainer.lineBreakMode = NSLineBreakByWordWrapping;
+    textView.textContainer.maximumNumberOfLines = 0;
+    textView.textContainer.widthTracksTextView = YES;
+    textView.clipsToBounds = NO;
+}
+
+static void TOConfigureCATextLayerForMultilineTranslation(CATextLayer *layer) {
+    if (!layer) return;
+    layer.wrapped = YES;
+    layer.truncationMode = kCATruncationNone;
+    layer.masksToBounds = NO;
+    [layer setNeedsLayout];
+}
+
 static CGFloat TOFittedFontSizeForText(NSString *text, CGRect rect, CGFloat minSize, CGFloat maxSize) {
     NSString *sample = text.length > 0 ? text : @"Aa";
     CGRect drawRect = CGRectInset(rect, 1.0, 0.0);
@@ -1593,45 +1678,50 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         if (m.ocrAutoColorEnabled) fg = item[@"detectedColor"];
         if (!fg) fg = [m ocrManualUIColor];
 
-        CGRect bgRect = CGRectInset(rect, -2.0, -1.0);
         UIColor *bgBase = nil;
         if (m.ocrBackgroundAutoColorEnabled) bgBase = item[@"detectedBackgroundColor"];
         if (!bgBase) bgBase = [m ocrBackgroundUIColor];
         UIColor *bgColor = [bgBase colorWithAlphaComponent:MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0)];
-        [bgColor setFill];
-        [[UIBezierPath bezierPathWithRoundedRect:bgRect cornerRadius:3.0] fill];
 
         CGRect textRect = CGRectInset(rect, 1.0, 0.0);
         NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
         paragraph.alignment = m.ocrCenterTextEnabled ? NSTextAlignmentCenter : NSTextAlignmentNatural;
         paragraph.lineBreakMode = NSLineBreakByWordWrapping;
 
-        NSDictionary *attrs = nil;
-        CGSize measured = CGSizeZero;
-        for (NSInteger i = 0; i < 12; i++) {
-            UIFont *font = [UIFont boldSystemFontOfSize:fontSize];
-            attrs = @{
-                NSFontAttributeName: font,
-                NSForegroundColorAttributeName: fg,
-                NSParagraphStyleAttributeName: paragraph
-            };
-            measured = [text boundingRectWithSize:textRect.size
-                                         options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
-                                      attributes:attrs
-                                         context:nil].size;
-            if (measured.height <= textRect.size.height + 0.5) break;
-            fontSize = MAX(1.0, fontSize - 1.0);
-        }
+        UIFont *font = [UIFont boldSystemFontOfSize:fontSize];
+        NSDictionary *attrs = @{
+            NSFontAttributeName: font,
+            NSForegroundColorAttributeName: fg,
+            NSParagraphStyleAttributeName: paragraph
+        };
+
+        CGSize measured = [text boundingRectWithSize:CGSizeMake(MAX(2.0, textRect.size.width), CGFLOAT_MAX)
+                                             options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
+                                          attributes:attrs
+                                             context:nil].size;
+
+        CGFloat expandedHeight = MAX(textRect.size.height, ceil(measured.height));
+        CGFloat maxDrawHeight = MAX(1.0, size.height - textRect.origin.y - 1.0);
+        expandedHeight = MIN(expandedHeight, maxDrawHeight);
 
         CGRect drawRect = textRect;
-        if (m.ocrCenterTextEnabled) {
+        drawRect.size.height = expandedHeight;
+        if (m.ocrCenterTextEnabled && expandedHeight <= textRect.size.height) {
             CGFloat textHeight = MIN(ceil(measured.height), textRect.size.height);
             drawRect.origin.y = textRect.origin.y + MAX(0.0, (textRect.size.height - textHeight) * 0.5);
             drawRect.size.height = textHeight;
         }
 
+        CGRect bgRect = CGRectInset(rect, -2.0, -1.0);
+        CGFloat extraHeight = MAX(0.0, expandedHeight - textRect.size.height);
+        bgRect.size.height += extraHeight;
+        CGFloat maxBgHeight = MAX(1.0, size.height - bgRect.origin.y - 1.0);
+        bgRect.size.height = MIN(bgRect.size.height, maxBgHeight);
+        [bgColor setFill];
+        [[UIBezierPath bezierPathWithRoundedRect:bgRect cornerRadius:3.0] fill];
+
         [text drawWithRect:drawRect
-                  options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingTruncatesLastVisibleLine
+                  options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
                attributes:attrs
                   context:nil];
     }
@@ -2610,6 +2700,7 @@ static NSArray<NSDictionary<NSString *, NSString *> *> *TOSupportedLanguages(voi
 - (void)openDeveloperPage;
 - (void)syncLensModeState;
 - (void)hideLensPanel;
+- (void)applyLensTextScalingAndRelayout:(BOOL)autoFit;
 - (void)startLensScanFromCurrentButtonPosition;
 - (void)requestLensTranslationAtPoint:(CGPoint)point inWindow:(UIWindow *)window force:(BOOL)force;
 - (NSArray<NSDictionary *> *)colorStops;
@@ -3219,8 +3310,26 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
     [m saveSettings];
 
+    if (self.lensPanelView && !self.lensPanelView.hidden) {
+        [self applyLensTextScalingAndRelayout:YES];
+    }
+
     if (m.translationTapMode == TOTranslationTapModeLive && self.liveTranslateEnabled) {
         [self requestLiveOCROverlayRefresh];
+    } else if (m.translationTapMode == TOTranslationTapModeLens && self.lensModeEnabled) {
+        UIWindow *window = self.attachedWindow ?: TOActiveWindow();
+        if (window && self.floatingButton) {
+            [self requestLensTranslationAtPoint:self.floatingButton.center inWindow:window force:YES];
+        }
+    }
+
+    for (UIWindow *window in TOVisibleWindows()) {
+        [window setNeedsLayout];
+        [window layoutIfNeeded];
+    }
+
+    if (m.translationTapMode == TOTranslationTapModeNormal) {
+        TOForceImmediateUILocalizationRefresh();
     }
 }
 
@@ -3529,6 +3638,29 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     [g setTranslation:CGPointZero inView:panel];
 }
 
+- (void)applyLensTextScalingAndRelayout:(BOOL)autoFit {
+    if (!self.lensTranslatedTextView || !self.lensOriginalTextView) return;
+
+    TOTranslationManager *m = [TOTranslationManager shared];
+    CGFloat scale = m.ocrTextScale > 0.01 ? m.ocrTextScale : 1.0;
+    CGFloat translatedSize = MAX(12.0, MIN(34.0, 14.0 * scale));
+    CGFloat originalSize = MAX(11.0, MIN(30.0, 13.0 * scale));
+
+    self.lensTranslatedTextView.font = [UIFont boldSystemFontOfSize:translatedSize];
+    self.lensOriginalTextView.font = [UIFont systemFontOfSize:originalSize weight:UIFontWeightRegular];
+
+    TOConfigureTextViewForMultilineTranslation(self.lensTranslatedTextView);
+    TOConfigureTextViewForMultilineTranslation(self.lensOriginalTextView);
+
+    [self lensLayoutPanelSubviewsAutoFit:autoFit];
+    [self.lensTranslatedTextView setNeedsLayout];
+    [self.lensOriginalTextView setNeedsLayout];
+    [self.lensTranslatedTextView layoutIfNeeded];
+    [self.lensOriginalTextView layoutIfNeeded];
+    [self.lensPanelView setNeedsLayout];
+    [self.lensPanelView layoutIfNeeded];
+}
+
 - (void)lensLayoutPanelSubviewsAutoFit:(BOOL)autoFit {
     UIView *panel = self.lensPanelView;
     UIWindow *window = panel.window;
@@ -3581,7 +3713,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         panel.layer.cornerRadius = 12;
         panel.layer.borderColor = [[UIColor whiteColor] colorWithAlphaComponent:0.16].CGColor;
         panel.layer.borderWidth = 1.0;
-        panel.clipsToBounds = YES;
+        panel.clipsToBounds = NO;
         objc_setAssociatedObject(panel, kTOTranslationSkipKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 
         UIView *header = [[UIView alloc] initWithFrame:CGRectZero];
@@ -3635,6 +3767,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         translatedView.textColor = UIColor.whiteColor;
         translatedView.font = [UIFont boldSystemFontOfSize:14];
         translatedView.layer.cornerRadius = 8;
+        translatedView.clipsToBounds = NO;
         translatedView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
         translatedView.alwaysBounceVertical = YES;
         translatedView.keyboardAppearance = UIKeyboardAppearanceDark;
@@ -3655,6 +3788,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
         originalView.textColor = UIColor.whiteColor;
         originalView.font = [UIFont systemFontOfSize:13 weight:UIFontWeightRegular];
         originalView.layer.cornerRadius = 8;
+        originalView.clipsToBounds = NO;
         originalView.textContainerInset = UIEdgeInsetsMake(8, 8, 8, 8);
         originalView.alwaysBounceVertical = YES;
         originalView.keyboardAppearance = UIKeyboardAppearanceDark;
@@ -3700,7 +3834,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
         self.lensPanelView = panel;
         self.lensPanelUserResized = NO;
-        [self lensLayoutPanelSubviewsAutoFit:YES];
+        [self applyLensTextScalingAndRelayout:YES];
     }
 
     if (self.lensPanelView.superview != window) {
@@ -3728,7 +3862,7 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     self.lensOriginalTextView.text = self.lensCurrentSourceText;
     self.lensTranslatedTextView.text = self.lensCurrentTranslatedText;
     self.lensStatusLabel.text = TOUIString(@"تم التحديث");
-    [self lensLayoutPanelSubviewsAutoFit:autoFit];
+    [self applyLensTextScalingAndRelayout:autoFit];
 }
 
 - (void)startLensScanFromCurrentButtonPosition {
@@ -4797,6 +4931,17 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
 
 @end
 
+%hook CATextLayer
+
+- (void)setString:(id)string {
+    %orig(string);
+    if (string) {
+        TOConfigureCATextLayerForMultilineTranslation(self);
+    }
+}
+
+%end
+
 %hook UILabel
 
 - (void)setText:(NSString *)text {
@@ -4806,9 +4951,11 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     }
 
     %orig(text);
+    if (text.length > 0) TOConfigureLabelForMultilineTranslation(self);
     TOTranslateAndApplyTextToObject(self, text, ^(NSString *translated) {
         if (![self.text isEqualToString:translated]) {
             [self setText:translated];
+            TOConfigureLabelForMultilineTranslation(self);
         }
     });
 }
@@ -4820,9 +4967,11 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     }
 
     %orig(text);
+    if (text.length > 0) TOConfigureLabelForMultilineTranslation(self);
     TOTranslateAndApplyAttributedTextToObject(self, text, ^(NSAttributedString *translated) {
         if (![[self.attributedText string] isEqualToString:[translated string]]) {
             [self setAttributedText:translated];
+            TOConfigureLabelForMultilineTranslation(self);
         }
     });
 }
@@ -5008,10 +5157,12 @@ typedef NS_ENUM(NSInteger, TOOverlaySliderMode) {
     }
 
     %orig(text);
+    TOConfigureTextViewForMultilineTranslation(self);
     TOTranslateAndApplyAttributedTextToObject(self, text, ^(NSAttributedString *translated) {
         NSString *current = self.attributedText.string ?: @"";
         if (![current isEqualToString:translated.string ?: @""]) {
             [self setAttributedText:translated];
+            TOConfigureTextViewForMultilineTranslation(self);
         }
     });
 }
