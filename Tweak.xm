@@ -1569,6 +1569,12 @@ static CGFloat TOFittedFontSizeForText(NSString *text, CGRect rect, CGFloat minS
     return MAX(minSize, size);
 }
 
+static CGFloat TOHorizontalOverlapRatio(CGRect a, CGRect b) {
+    CGFloat overlap = MAX(0.0, MIN(CGRectGetMaxX(a), CGRectGetMaxX(b)) - MAX(CGRectGetMinX(a), CGRectGetMinX(b)));
+    CGFloat base = MAX(1.0, MIN(CGRectGetWidth(a), CGRectGetWidth(b)));
+    return overlap / base;
+}
+
 static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictionary *> *items) {
     if (!image || items.count == 0) return image;
 
@@ -1577,7 +1583,19 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
     UIGraphicsBeginImageContextWithOptions(size, NO, image.scale);
     [image drawInRect:CGRectMake(0, 0, size.width, size.height)];
 
-    for (NSDictionary *item in items) {
+    NSArray<NSDictionary *> *sortedItems = [items sortedArrayUsingComparator:^NSComparisonResult(NSDictionary *a, NSDictionary *b) {
+        CGRect ra = [a[@"rect"] CGRectValue];
+        CGRect rb = [b[@"rect"] CGRectValue];
+        CGFloat dy = CGRectGetMinY(ra) - CGRectGetMinY(rb);
+        if (fabs(dy) > 2.0) return (dy < 0) ? NSOrderedAscending : NSOrderedDescending;
+        CGFloat dx = CGRectGetMinX(ra) - CGRectGetMinX(rb);
+        return (dx < 0) ? NSOrderedAscending : NSOrderedDescending;
+    }];
+
+    NSMutableArray<NSValue *> *placedBackgroundRects = [NSMutableArray arrayWithCapacity:sortedItems.count];
+
+    for (NSInteger index = 0; index < (NSInteger)sortedItems.count; index++) {
+        NSDictionary *item = sortedItems[index];
         NSString *text = item[@"translated"];
         NSValue *rectValue = item[@"rect"];
         if (text.length == 0 || !rectValue) continue;
@@ -1589,88 +1607,97 @@ static UIImage *TORenderTranslatedTextOnImage(UIImage *image, NSArray<NSDictiona
         NSString *sourceText = item[@"source"] ?: text;
         CGFloat originalFit = TOFittedFontSizeForText(sourceText, rect, 8.0, 34.0);
         CGFloat fontSize = MAX(1.0, MIN(40.0, originalFit * scale));
+
+        CGRect textRect = CGRectInset(rect, 1.0, 0.0);
+        CGFloat maxBottom = size.height - 1.0;
+
+        for (NSInteger nextIndex = index + 1; nextIndex < (NSInteger)sortedItems.count; nextIndex++) {
+            NSValue *nextRectValue = sortedItems[nextIndex][@"rect"];
+            if (!nextRectValue) continue;
+            CGRect nextRect = [nextRectValue CGRectValue];
+            if (CGRectIsEmpty(nextRect)) continue;
+            if (CGRectGetMinY(nextRect) <= CGRectGetMinY(textRect) + 0.5) continue;
+
+            CGFloat overlapRatio = TOHorizontalOverlapRatio(textRect, nextRect);
+            CGFloat centerDistance = fabs(CGRectGetMidX(textRect) - CGRectGetMidX(nextRect));
+            BOOL relatedColumn = (overlapRatio >= 0.15) || (centerDistance <= MAX(24.0, CGRectGetWidth(textRect) * 0.55));
+            if (!relatedColumn) continue;
+
+            maxBottom = MIN(maxBottom, CGRectGetMinY(nextRect) - 2.0);
+        }
+
+        for (NSValue *placedValue in placedBackgroundRects) {
+            CGRect placedRect = [placedValue CGRectValue];
+            if (CGRectGetMinY(placedRect) <= CGRectGetMinY(textRect) + 0.5) continue;
+            if (TOHorizontalOverlapRatio(textRect, placedRect) < 0.12) continue;
+            maxBottom = MIN(maxBottom, CGRectGetMinY(placedRect) - 1.0);
+        }
+
+        CGFloat availableHeight = maxBottom - textRect.origin.y;
+        availableHeight = MAX(textRect.size.height, availableHeight);
+        availableHeight = MIN(availableHeight, size.height - textRect.origin.y - 1.0);
+        if (availableHeight < 2.0) availableHeight = textRect.size.height;
+
+        CGRect adaptiveTextRect = textRect;
+        adaptiveTextRect.size.height = availableHeight;
+
         UIColor *fg = nil;
         if (m.ocrAutoColorEnabled) fg = item[@"detectedColor"];
         if (!fg) fg = [m ocrManualUIColor];
 
-        CGRect textRect = CGRectInset(rect, 1.0, 0.0);
+        UIColor *bgBase = nil;
+        if (m.ocrBackgroundAutoColorEnabled) bgBase = item[@"detectedBackgroundColor"];
+        if (!bgBase) bgBase = [m ocrBackgroundUIColor];
+
         NSMutableParagraphStyle *paragraph = [NSMutableParagraphStyle new];
         paragraph.alignment = m.ocrCenterTextEnabled ? NSTextAlignmentCenter : NSTextAlignmentNatural;
-        paragraph.lineBreakMode = NSLineBreakByCharWrapping;
+        paragraph.lineBreakMode = NSLineBreakByWordWrapping;
 
         NSDictionary *attrs = nil;
         CGSize measured = CGSizeZero;
-        CGFloat minFontSize = 7.0;
-        CGFloat expandedHeight = MAX(textRect.size.height, 2.0);
-        CGFloat maxExpandedHeight = MIN(size.height * 0.40, MAX(textRect.size.height * 4.0, textRect.size.height + 24.0));
-        for (NSInteger i = 0; i < 20; i++) {
+        for (NSInteger i = 0; i < 24; i++) {
             UIFont *font = [UIFont boldSystemFontOfSize:fontSize];
             attrs = @{
                 NSFontAttributeName: font,
                 NSForegroundColorAttributeName: fg,
                 NSParagraphStyleAttributeName: paragraph
             };
-            measured = [text boundingRectWithSize:CGSizeMake(MAX(2.0, textRect.size.width), CGFLOAT_MAX)
+            measured = [text boundingRectWithSize:CGSizeMake(adaptiveTextRect.size.width, CGFLOAT_MAX)
                                          options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
                                       attributes:attrs
                                          context:nil].size;
-            CGFloat requiredHeight = ceil(measured.height);
-            if (requiredHeight <= expandedHeight + 0.5) break;
-
-            if (fontSize > minFontSize + 0.1) {
-                fontSize = MAX(minFontSize, fontSize - 1.0);
-                continue;
-            }
-
-            expandedHeight = MIN(maxExpandedHeight, requiredHeight);
-            break;
+            if (measured.height <= adaptiveTextRect.size.height + 0.5) break;
+            fontSize = MAX(1.0, fontSize - 1.0);
         }
 
-        if (measured.height > expandedHeight + 0.5 && expandedHeight < maxExpandedHeight) {
-            expandedHeight = MIN(maxExpandedHeight, ceil(measured.height));
+        CGFloat measuredHeight = MAX(ceil(measured.height), textRect.size.height);
+        CGFloat containerHeight = MIN(adaptiveTextRect.size.height, measuredHeight + 2.0);
+        containerHeight = MAX(textRect.size.height, containerHeight);
+
+        CGRect containerRect = adaptiveTextRect;
+        containerRect.size.height = containerHeight;
+
+        CGRect bgRect = CGRectInset(containerRect, -2.0, -1.0);
+        bgRect = CGRectIntersection(bgRect, CGRectMake(0, 0, size.width, size.height));
+        if (!CGRectIsEmpty(bgRect)) {
+            UIColor *bgColor = [bgBase colorWithAlphaComponent:MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0)];
+            [bgColor setFill];
+            [[UIBezierPath bezierPathWithRoundedRect:bgRect cornerRadius:3.0] fill];
+            [placedBackgroundRects addObject:[NSValue valueWithCGRect:bgRect]];
         }
 
-        expandedHeight = MAX(textRect.size.height, expandedHeight);
-
-        CGFloat backgroundInsetX = 2.0;
-        CGFloat backgroundInsetY = 1.0;
-        CGRect bgRect = CGRectMake(rect.origin.x - backgroundInsetX,
-                                   rect.origin.y - backgroundInsetY,
-                                   rect.size.width + (backgroundInsetX * 2.0),
-                                   expandedHeight + (backgroundInsetY * 2.0));
-
-        if (CGRectGetMaxY(bgRect) > size.height) {
-            bgRect.origin.y = MAX(0.0, size.height - bgRect.size.height);
+        CGRect drawRect = containerRect;
+        CGFloat drawHeight = MIN(containerRect.size.height, ceil(measured.height));
+        BOOL expandedVertically = containerRect.size.height > textRect.size.height + 0.5;
+        if (m.ocrCenterTextEnabled && !expandedVertically) {
+            drawRect.origin.y = containerRect.origin.y + MAX(0.0, (containerRect.size.height - drawHeight) * 0.5);
         }
-        if (bgRect.origin.y < 0.0) bgRect.origin.y = 0.0;
+        drawRect.size.height = MAX(drawHeight, 1.0);
 
-        textRect = CGRectMake(rect.origin.x + 1.0,
-                              bgRect.origin.y + backgroundInsetY,
-                              MAX(2.0, rect.size.width - 2.0),
-                              MAX(2.0, bgRect.size.height - (backgroundInsetY * 2.0)));
-
-        UIColor *bgBase = nil;
-        if (m.ocrBackgroundAutoColorEnabled) bgBase = item[@"detectedBackgroundColor"];
-        if (!bgBase) bgBase = [m ocrBackgroundUIColor];
-        UIColor *bgColor = [bgBase colorWithAlphaComponent:MIN(MAX(m.ocrBackgroundAlpha, 0.0), 1.0)];
-        [bgColor setFill];
-        [[UIBezierPath bezierPathWithRoundedRect:bgRect cornerRadius:3.0] fill];
-
-        CGRect drawRect = textRect;
-        if (m.ocrCenterTextEnabled) {
-            CGFloat textHeight = MIN(ceil(measured.height), textRect.size.height);
-            drawRect.origin.y = textRect.origin.y + MAX(0.0, (textRect.size.height - textHeight) * 0.5);
-            drawRect.size.height = textHeight;
-        }
-
-        CGContextRef contextRef = UIGraphicsGetCurrentContext();
-        CGContextSaveGState(contextRef);
-        UIRectClip(textRect);
         [text drawWithRect:drawRect
                   options:NSStringDrawingUsesLineFragmentOrigin | NSStringDrawingUsesFontLeading
                attributes:attrs
                   context:nil];
-        CGContextRestoreGState(contextRef);
     }
 
     UIImage *rendered = UIGraphicsGetImageFromCurrentImageContext();
